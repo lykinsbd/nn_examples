@@ -5,8 +5,6 @@ Example code for Network-Notes.com entry on Parsing Network Device Output
 """
 
 import getpass
-import importlib.resources
-import os
 import re
 import sys
 
