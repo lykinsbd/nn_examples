@@ -17,14 +17,7 @@ from netmiko import ConnectHandler
 Test parsing network device configuration
 """
 
-# First, we need to set the NET_TEXTFSM environment variable,
-# so that netmiko knows where our templates are
-with importlib.resources.path(
-    package="ntc_templates", resource="templates"
-) as template_path:
-    os.environ["NET_TEXTFSM"] = str(template_path)
-
-# Next, gather the needed credentials
+# Gather the needed credentials
 net_device_username = input("Username: ")
 net_device_password = getpass.getpass()
 # Set enable/secret = password for now
