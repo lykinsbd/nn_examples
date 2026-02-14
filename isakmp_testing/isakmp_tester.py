@@ -325,7 +325,7 @@ Examples:
     # Check for root
     if os.geteuid() != 0:
         print("[!] Warning: This script requires root/sudo for raw socket access")
-        print("    Run with: sudo python3 isakmp_tester.py ...")
+        print("    Run with: sudo poetry run python isakmp_tester.py ...")
         sys.exit(1)
     
     try:

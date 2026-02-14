@@ -9,7 +9,7 @@ This is NOT a real VPN implementation - it only responds to initial
 ISAKMP packets for testing purposes.
 
 Usage:
-    sudo python3 isakmp_listener.py [--port 500] [--interface 0.0.0.0]
+    sudo poetry run python isakmp_listener.py [--port 500] [--interface 0.0.0.0]
 
 Requirements:
     - Python 3.8+
@@ -169,7 +169,7 @@ Note: This is a test tool only. It does NOT implement a real VPN.
     # Check for root
     if os.geteuid() != 0:
         print("[!] Error: This script requires root/sudo for raw socket access")
-        print("    Run with: sudo python3 isakmp_listener.py")
+        print("    Run with: sudo poetry run python isakmp_listener.py")
         sys.exit(1)
     
     try:
