@@ -21,7 +21,12 @@ curl -sSL https://install.python-poetry.org | python3 -
 ```bash
 cd isakmp_testing
 poetry install
+
+# Also install for root (required for raw socket access)
+sudo poetry install
 ```
+
+> **Note:** Scapy requires raw socket access, which needs root privileges. Since `sudo` runs commands in a separate environment, you must install dependencies both as your user and as root.
 
 ## Usage
 
@@ -88,6 +93,28 @@ The listener accepts all proposed transform sets and responds appropriately, mak
 - Hash: SHA-256 or SHA-384 (avoid SHA-1)
 - Encryption: AES-256-CBC or AES-256-GCM
 - DH Group: 14+ (2048-bit or higher)
+
+## Troubleshooting
+
+### Raw Socket Access
+
+Scapy requires raw socket access, which needs root/sudo privileges:
+
+```bash
+# This won't work (no raw socket access)
+poetry run python isakmp_tester.py 192.168.1.1
+
+# This works
+sudo poetry run python isakmp_tester.py 192.168.1.1
+```
+
+**Important:** Since `sudo` runs in a separate environment, you must install dependencies as root:
+
+```bash
+sudo poetry install
+```
+
+This creates a separate Poetry virtual environment for root with the required dependencies.
 
 ## Related Blog Posts
 
