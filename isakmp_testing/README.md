@@ -5,13 +5,22 @@ Python scripts for testing ISAKMP/IKE Phase 1 connectivity using Scapy.
 ## Requirements
 
 - Python 3.8+
-- Scapy
+- Poetry (for dependency management)
 - Root/sudo access (required for raw sockets)
 
 ## Installation
 
+### Install Poetry (if not already installed)
+
 ```bash
-pip install -r requirements.txt
+curl -sSL https://install.python-poetry.org | python3 -
+```
+
+### Install Dependencies
+
+```bash
+cd isakmp_testing
+poetry install
 ```
 
 ## Usage
@@ -19,25 +28,25 @@ pip install -r requirements.txt
 ### Test Single Transform Set
 
 ```bash
-sudo python3 isakmp_tester.py 192.168.1.1
+sudo poetry run python isakmp_tester.py 192.168.1.1
 ```
 
 ### Test Multiple Transform Sets
 
 ```bash
-sudo python3 isakmp_tester.py 192.168.1.1 --test-multiple
+sudo poetry run python isakmp_tester.py 192.168.1.1 --test-multiple
 ```
 
 ### Use Aggressive Mode
 
 ```bash
-sudo python3 isakmp_tester.py 192.168.1.1 --aggressive
+sudo poetry run python isakmp_tester.py 192.168.1.1 --aggressive
 ```
 
 ### Custom Transform Set
 
 ```bash
-sudo python3 isakmp_tester.py 192.168.1.1 \
+sudo poetry run python isakmp_tester.py 192.168.1.1 \
     --encryption 7 \
     --key-length 256 \
     --hash 4 \

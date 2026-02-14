@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "isakmp-tester"
+version = "0.1.0"
+description = "ISAKMP/IKE Phase 1 tester using Scapy"
+authors = ["Brett Lykins <brett@lykinsbd.net>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+scapy = "^2.7.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
