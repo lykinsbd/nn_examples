@@ -54,6 +54,21 @@ sudo poetry run python isakmp_tester.py 192.168.1.1 \
     --timeout 10
 ```
 
+## Self-Contained Testing
+
+For testing without a real ISAKMP peer, use the included listener:
+
+```bash
+# Terminal 1: Start the listener
+sudo poetry run python isakmp_listener.py
+
+# Terminal 2: Test against localhost
+sudo poetry run python isakmp_tester.py 127.0.0.1
+sudo poetry run python isakmp_tester.py 127.0.0.1 --test-multiple
+```
+
+The listener accepts all proposed transform sets and responds appropriately, making it perfect for testing the tester script itself.
+
 ## Options
 
 - `--test-multiple`: Test multiple common transform sets
