@@ -68,81 +68,41 @@ def build_isakmp_packet(target_ip, transform_set, aggressive_mode=False):
     isakmp = ISAKMP(
         init_cookie=RandString(8),
         resp_cookie=b'\x00' * 8,
-        next_payload=1,
         exch_type=4 if aggressive_mode else 2,  # 4=Aggressive, 2=Main Mode
-        flags=0
     )
     
-    # Build transform attributes
-    trans_attrs = []
+    # Build transform attributes as list of (type, value) tuples
+    # Type numbers: 1=Encryption, 2=Hash, 3=Auth, 4=Group, 11=LifeType, 12=LifeDuration, 14=KeyLength
+    transforms = [
+        (1, transform_set['encryption']),      # Encryption algorithm
+        (2, transform_set['hash']),            # Hash algorithm
+        (4, transform_set['dh_group']),        # DH Group
+        (3, transform_set['auth_method']),     # Authentication method
+        (11, 1),                               # Life Type: seconds
+        (12, transform_set['lifetime'])        # Life Duration
+    ]
     
-    # Encryption algorithm (TV format)
-    trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-        attribute_type=0x8001,
-        attribute_value=transform_set['encryption']
-    ))
-    
-    # Key length (TV format) - only if needed
+    # Add key length if specified
     if transform_set.get('key_length', 0) > 0:
-        trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-            attribute_type=0x800e,
-            attribute_value=transform_set['key_length']
-        ))
-    
-    # Hash algorithm (TV format)
-    trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-        attribute_type=0x8002,
-        attribute_value=transform_set['hash']
-    ))
-    
-    # DH Group (TV format)
-    trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-        attribute_type=0x8004,
-        attribute_value=transform_set['dh_group']
-    ))
-    
-    # Authentication method (TV format)
-    trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-        attribute_type=0x8003,
-        attribute_value=transform_set['auth_method']
-    ))
-    
-    # Life type (TV format)
-    trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-        attribute_type=0x800b,
-        attribute_value=1  # Seconds
-    ))
-    
-    # Life duration (TLV format)
-    trans_attrs.append(ISAKMP_payload_Transform_Attribute(
-        attribute_type=0x000c,
-        length=4,
-        attribute_value=transform_set['lifetime']
-    ))
+        transforms.insert(1, (14, transform_set['key_length']))
     
     # Build Transform payload
     transform = ISAKMP_payload_Transform(
-        next_payload=0,
-        transform_type=1,
-        transform_id=1,
-        attributes=trans_attrs
+        transform_id=1,      # KEY_IKE
+        transforms=transforms
     )
     
     # Build Proposal payload
     proposal = ISAKMP_payload_Proposal(
-        next_payload=0,
         proposal=1,
-        proto=1,
-        SPIsize=0,
-        trans_nb=1,
+        proto=1,             # ISAKMP
         trans=transform
     )
     
     # Build SA payload
     sa = ISAKMP_payload_SA(
-        next_payload=0,
-        DOI=1,
-        situation=1,
+        doi=1,               # IPsec DOI
+        situation=1,         # Identity Only
         prop=proposal
     )
     
