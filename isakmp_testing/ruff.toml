@@ -1,0 +1,20 @@
+# Ruff configuration
+line-length = 120
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+]
+ignore = [
+    "F403",  # Star imports required for Scapy
+    "F405",  # Undefined names from star imports (Scapy)
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"

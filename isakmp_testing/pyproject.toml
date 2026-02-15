@@ -10,6 +10,9 @@ python = "^3.8"
 scapy = "^2.7.0"
 
 
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.15.1"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
