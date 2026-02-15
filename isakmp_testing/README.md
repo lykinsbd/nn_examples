@@ -74,6 +74,8 @@ sudo poetry run python isakmp_tester.py 127.0.0.1 --test-multiple
 
 The listener accepts all proposed transform sets and responds appropriately, making it perfect for testing the tester script itself.
 
+**Note on Localhost Testing:** Due to how Scapy handles packets on the loopback interface, the listener may not intercept packets sent to 127.0.0.1. The tester will still receive responses (from Scapy's internal handling), but the listener won't log them. For full listener functionality, test between separate machines or use a real ISAKMP/VPN device.
+
 ## Options
 
 - `--test-multiple`: Test multiple common transform sets
