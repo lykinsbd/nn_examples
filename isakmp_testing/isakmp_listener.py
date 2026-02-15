@@ -162,18 +162,9 @@ def start_listener(interface="0.0.0.0", port=500):
             response = build_response(pkt)
             if response:
                 print(f"[*] Sending response...")
-                # Use sendp for layer 2 to ensure proper delivery on same machine
-                # Add Ether layer if not present
-                if not response.haslayer(Ether) and pkt.haslayer(Ether):
-                    # Copy Ether layer from request, swap src/dst
-                    ether = Ether(src=pkt[Ether].dst, dst=pkt[Ether].src)
-                    response = ether / response
-                    sendp(response, verbose=0)
-                    print(f"[+] Response sent via layer 2")
-                else:
-                    # Fallback to layer 3 send
-                    send(response, verbose=0)
-                    print(f"[+] Response sent via layer 3")
+                # Use layer 3 send() for compatibility with sr1()
+                send(response, verbose=0)
+                print(f"[+] Response sent")
             else:
                 print(f"[!] No response built")
     
