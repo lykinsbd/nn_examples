@@ -64,23 +64,25 @@ def build_response(request):
         transform = request[ISAKMP_payload_Transform]
         print(f"    Transform ID: {transform.transform_id}")
         
-        if hasattr(transform, 'attributes'):
-            print(f"    Attributes:")
-            for attr in transform.attributes:
-                attr_type = attr.attribute_type
-                attr_val = attr.attribute_value
-                
+        # Parse transforms (list of tuples)
+        if hasattr(transform, 'transforms') and transform.transforms:
+            print(f"    Transform Attributes:")
+            for attr_type, attr_val in transform.transforms:
                 # Decode common attributes
-                if attr_type in [0x8001, 0x0001]:
+                if attr_type == 1:
                     print(f"      Encryption: {attr_val}")
-                elif attr_type in [0x800e, 0x000e]:
+                elif attr_type == 14:
                     print(f"      Key Length: {attr_val}")
-                elif attr_type in [0x8002, 0x0002]:
+                elif attr_type == 2:
                     print(f"      Hash: {attr_val}")
-                elif attr_type in [0x8004, 0x0004]:
+                elif attr_type == 4:
                     print(f"      DH Group: {attr_val}")
-                elif attr_type in [0x8003, 0x0003]:
+                elif attr_type == 3:
                     print(f"      Auth Method: {attr_val}")
+                elif attr_type == 11:
+                    print(f"      Life Type: {attr_val}")
+                elif attr_type == 12:
+                    print(f"      Life Duration: {attr_val}")
     
     # Build response packet
     ip = IP(src=request[IP].dst, dst=request[IP].src)
@@ -90,20 +92,17 @@ def build_response(request):
     isakmp = ISAKMP(
         init_cookie=req_isakmp.init_cookie,  # Echo initiator cookie
         resp_cookie=RandString(8),            # Generate responder cookie
-        next_payload=1,                       # SA payload
         exch_type=req_isakmp.exch_type,      # Echo exchange type
-        flags=0
     )
     
-    # Echo back the SA payload (simplified - just accept what was proposed)
+    # Echo back the SA payload (accept what was proposed)
     if request.haslayer(ISAKMP_payload_SA):
+        # Copy the SA payload structure
         sa = request[ISAKMP_payload_SA].copy()
-        sa.next_payload = 0
     else:
         # Fallback: create minimal SA payload
         sa = ISAKMP_payload_SA(
-            next_payload=0,
-            DOI=1,
+            doi=1,
             situation=1
         )
     
