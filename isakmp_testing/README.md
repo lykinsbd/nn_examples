@@ -67,12 +67,14 @@ For testing without a real ISAKMP peer, use the included listener:
 # Terminal 1: Start the listener
 sudo poetry run python isakmp_listener.py
 
-# Terminal 2: Test against localhost
-sudo poetry run python isakmp_tester.py 127.0.0.1
-sudo poetry run python isakmp_tester.py 127.0.0.1 --test-multiple
+# Terminal 2: Test against your machine's actual IP (not 127.0.0.1)
+sudo poetry run python isakmp_tester.py <your-ip-address>
+sudo poetry run python isakmp_tester.py <your-ip-address> --test-multiple
 ```
 
 The listener accepts all proposed transform sets and responds appropriately, making it perfect for testing the tester script itself.
+
+**Important:** Use your machine's actual IP address (e.g., `192.168.1.100`), not `127.0.0.1`. The loopback interface has special behavior that prevents `sniff()` from intercepting packets. See the [Scapy documentation](https://scapy.readthedocs.io/en/latest/troubleshooting.html#i-can-t-ping-127-0-0-1-or-1-scapy-does-not-work-with-127-0-0-1-or-1-on-the-loopback-interface) for details.
 
 **Note on Localhost Testing:** Due to how the loopback interface works, Scapy's `sniff()` cannot intercept packets sent to 127.0.0.1. As explained in the [Scapy documentation](https://scapy.readthedocs.io/en/latest/troubleshooting.html#i-can-t-ping-127-0-0-1-or-1-scapy-does-not-work-with-127-0-0-1-or-1-on-the-loopback-interface):
 
