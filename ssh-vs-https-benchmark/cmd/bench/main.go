@@ -17,6 +17,7 @@ import (
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/device"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/httpserver"
 	latencyPkg "github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/latency"
+	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/proxy"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/sshserver"
 	"golang.org/x/crypto/ssh"
 )
@@ -63,12 +64,13 @@ func main() {
 	httpsPort := flag.Int("https-port", 8443, "HTTPS listen port (embedded mode)")
 	user := flag.String("user", "admin", "Username")
 	pass := flag.String("pass", "admin", "Password")
-	transport := flag.String("transport", "both", "Transport: ssh, https, both")
+	transport := flag.String("transport", "both", "Transport: ssh, https, both, proxy")
 	iterations := flag.Int("iterations", 50, "Iterations per test")
 	concurrency := flag.Int("concurrency", 1, "Concurrent workers")
 	commands := flag.Int("commands", 1, "Commands per iteration")
-	profile := flag.String("latency", "local", "Latency profile: local, campus, regional, continental, intercontinental, transpacific")
-	transcriptsDir := flag.String("transcripts", "transcripts", "Transcript dir (for embedded mode)")
+	profile := flag.String("latency", "local", "Latency profile")
+	proxyPort := flag.Int("proxy-port", 9443, "Proxy HTTPS listen port")
+	transcriptsDir := flag.String("transcripts", "transcripts", "Transcript dir")
 	flag.Parse()
 
 	delay, ok := latencyProfiles[*profile]
@@ -107,6 +109,41 @@ func main() {
 	httpSrv.SetListener(&latencyPkg.Listener{Listener: httpsLn, Delay: delay})
 	go httpSrv.ListenAndServeTLS()
 
+	// Proxy: HTTPS frontend with WAN latency → SSH backend with campus latency (1ms one-way)
+	proxyAddr := fmt.Sprintf("localhost:%d", *proxyPort)
+	// Backend SSH device gets campus-level latency (1ms one-way = 2ms RTT)
+	backendSSHPort := *sshPort + 1000
+	backendSSHAddr := fmt.Sprintf("localhost:%d", backendSSHPort)
+	backendLn, err := net.Listen("tcp", backendSSHAddr)
+	if err != nil {
+		log.Fatalf("backend ssh listen: %v", err)
+	}
+	backendSrv, err := sshserver.New(backendSSHAddr, dev)
+	if err != nil {
+		log.Fatalf("backend ssh: %v", err)
+	}
+	campusDelay := 1 * time.Millisecond
+	backendSrv.SetListener(&latencyPkg.Listener{Listener: backendLn, Delay: campusDelay})
+	go backendSrv.ListenAndServe()
+
+	// Proxy HTTPS listener gets WAN latency
+	proxyLn, err := net.Listen("tcp", proxyAddr)
+	if err != nil {
+		log.Fatalf("proxy listen: %v", err)
+	}
+	proxyFresh := proxy.New(proxyAddr, backendSSHAddr, *user, *pass, false)
+	proxyFresh.SetListener(&latencyPkg.Listener{Listener: proxyLn, Delay: delay})
+	go proxyFresh.ListenAndServeTLS()
+
+	proxyPooledAddr := fmt.Sprintf("localhost:%d", *proxyPort+1)
+	proxyPooledLn, err := net.Listen("tcp", proxyPooledAddr)
+	if err != nil {
+		log.Fatalf("proxy-pooled listen: %v", err)
+	}
+	proxyPooled := proxy.New(proxyPooledAddr, backendSSHAddr, *user, *pass, true)
+	proxyPooled.SetListener(&latencyPkg.Listener{Listener: proxyPooledLn, Delay: delay})
+	go proxyPooled.ListenAndServeTLS()
+
 	time.Sleep(500 * time.Millisecond)
 	if delay > 0 {
 		log.Printf("Server ready — profile=%s, simulated RTT=%.0fms", *profile, rttMs)
@@ -122,6 +159,10 @@ func main() {
 	}
 	if *transport == "https" || *transport == "both" {
 		r := benchHTTPS(httpsAddr, *user, *pass, *iterations, *concurrency, *commands, *profile, rttMs)
+		results = append(results, r...)
+	}
+	if *transport == "proxy" || *transport == "both" {
+		r := benchProxy(proxyAddr, proxyPooledAddr, *user, *pass, *iterations, *concurrency, *commands, *profile, rttMs)
 		results = append(results, r...)
 	}
 
@@ -344,6 +385,55 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 		summarize("https", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
 		summarize("https", "keep-alive", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes),
 		summarize("https", "config-push", cmdsPerIter, iterations, concurrency, profile, rttMs, configTimes),
+	}
+}
+
+func benchProxy(freshAddr, pooledAddr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
+	log.Printf("Benchmarking Proxy (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
+
+	// Proxy with fresh SSH to backend per request
+	freshTimes := runParallel(iterations, concurrency, func() time.Duration {
+		start := time.Now()
+		configBody := generateConfigBlock(cmdsPerIter)
+		client := &http.Client{
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			Timeout:   30 * time.Second,
+		}
+		url := fmt.Sprintf("https://%s/admin/config", freshAddr)
+		req, _ := http.NewRequest("POST", url, strings.NewReader(configBody))
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("proxy fresh: %v", err)
+			return 0
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return time.Since(start)
+	})
+
+	// Proxy with pooled SSH to backend
+	pooledTimes := runParallel(iterations, concurrency, func() time.Duration {
+		start := time.Now()
+		configBody := generateConfigBlock(cmdsPerIter)
+		client := &http.Client{
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			Timeout:   30 * time.Second,
+		}
+		url := fmt.Sprintf("https://%s/admin/config", pooledAddr)
+		req, _ := http.NewRequest("POST", url, strings.NewReader(configBody))
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("proxy pooled: %v", err)
+			return 0
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return time.Since(start)
+	})
+
+	return []Result{
+		summarize("proxy", "fresh-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
+		summarize("proxy", "pooled-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, pooledTimes),
 	}
 }
 
