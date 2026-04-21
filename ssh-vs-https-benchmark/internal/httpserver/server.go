@@ -1,0 +1,157 @@
+// Package httpserver provides a TLS-enabled HTTP server that emulates
+// the Cisco ASA HTTP interface for CLI automation.
+//
+// Endpoints:
+//
+//	GET  /admin/exec/show+version         — single command (URL-encoded)
+//	GET  /admin/exec/cmd1/cmd2/cmd3       — multiple commands (slash-separated)
+//	POST /admin/config                    — bulk commands (newline-delimited body)
+package httpserver
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"io"
+	"log"
+	"math/big"
+	"net"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/device"
+)
+
+// Server is an HTTPS server backed by a Device.
+type Server struct {
+	dev      *device.Device
+	addr     string
+	listener net.Listener // optional: set before ListenAndServeTLS to use custom listener
+}
+
+// New creates an HTTPS server on addr backed by dev.
+func New(addr string, dev *device.Device) *Server {
+	return &Server{dev: dev, addr: addr}
+}
+
+// SetListener sets a custom net.Listener (e.g., one wrapped with latency injection).
+func (s *Server) SetListener(ln net.Listener) {
+	s.listener = ln
+}
+
+// ListenAndServeTLS starts the HTTPS listener with a self-signed cert.
+func (s *Server) ListenAndServeTLS() error {
+	tlsCfg, err := selfSignedTLSConfig()
+	if err != nil {
+		return err
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/exec/", s.handleExec)
+	mux.HandleFunc("/admin/config", s.handleConfig)
+
+	srv := &http.Server{
+		Addr:      s.addr,
+		Handler:   s.authMiddleware(mux),
+		TLSConfig: tlsCfg,
+	}
+
+	baseLn := s.listener
+	if baseLn == nil {
+		baseLn, err = net.Listen("tcp", s.addr)
+		if err != nil {
+			return err
+		}
+	}
+	ln := tls.NewListener(baseLn, tlsCfg)
+	log.Printf("HTTPS listening on %s", baseLn.Addr())
+	return srv.Serve(ln)
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != s.dev.Username || pass != s.dev.Password {
+			w.Header().Set("WWW-Authenticate", `Basic realm="device"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// handleExec handles GET /admin/exec/show+version or /admin/exec/cmd1/cmd2
+func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin/exec/")
+	if path == "" {
+		http.Error(w, "no command", http.StatusBadRequest)
+		return
+	}
+
+	// Split on "/" for multi-command support (ASA style)
+	parts := strings.Split(path, "/")
+	var out strings.Builder
+	for _, p := range parts {
+		cmd := strings.ReplaceAll(p, "+", " ")
+		cmd = strings.TrimSpace(cmd)
+		if cmd == "" {
+			continue
+		}
+		out.WriteString(s.dev.Exec(cmd))
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	io.WriteString(w, out.String())
+}
+
+// handleConfig handles POST /admin/config with newline-delimited commands.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var out strings.Builder
+	for _, line := range strings.Split(string(body), "\n") {
+		cmd := strings.TrimSpace(line)
+		if cmd == "" {
+			continue
+		}
+		out.WriteString(s.dev.Exec(cmd))
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	io.WriteString(w, out.String())
+}
+
+func selfSignedTLSConfig() (*tls.Config, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, fmt.Errorf("creating cert: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{certDER},
+			PrivateKey:  key,
+		}},
+	}, nil
+}
