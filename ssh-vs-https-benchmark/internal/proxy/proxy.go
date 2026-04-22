@@ -5,33 +5,31 @@
 package proxy
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/tlsutil"
 	"golang.org/x/crypto/ssh"
 )
 
 // Server is an HTTPS proxy that forwards commands to a backend SSH device.
 type Server struct {
-	addr       string
+	addr        string
 	backendAddr string
-	sshCfg     *ssh.ClientConfig
-	pooled     bool
-	mu         sync.Mutex
-	pool       *ssh.Client
-	listener   net.Listener
+	user        string
+	pass        string
+	sshCfg      *ssh.ClientConfig
+	pooled      bool
+	mu          sync.Mutex
+	pool        *ssh.Client
+	listener    net.Listener
 }
 
 // New creates a proxy server. If pooled is true, one SSH connection
@@ -40,6 +38,8 @@ func New(addr, backendAddr, user, pass string, pooled bool) *Server {
 	return &Server{
 		addr:        addr,
 		backendAddr: backendAddr,
+		user:        user,
+		pass:        pass,
 		pooled:      pooled,
 		sshCfg: &ssh.ClientConfig{
 			User:            user,
@@ -55,7 +55,7 @@ func (s *Server) SetListener(ln net.Listener) { s.listener = ln }
 
 // ListenAndServeTLS starts the HTTPS proxy.
 func (s *Server) ListenAndServeTLS() error {
-	tlsCfg, err := selfSignedTLS()
+	tlsCfg, err := tlsutil.SelfSignedConfig()
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,19 @@ func (s *Server) ListenAndServeTLS() error {
 	}
 	ln := tls.NewListener(baseLn, tlsCfg)
 	log.Printf("Proxy HTTPS listening on %s → SSH backend %s (pooled=%v)", baseLn.Addr(), s.backendAddr, s.pooled)
-	return (&http.Server{Handler: mux, TLSConfig: tlsCfg}).Serve(ln)
+	return (&http.Server{Handler: s.authMiddleware(mux), TLSConfig: tlsCfg}).Serve(ln)
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != s.user || pass != s.pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="proxy"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) getSSH() (*ssh.Client, bool, error) {
@@ -93,6 +105,16 @@ func (s *Server) getSSH() (*ssh.Client, bool, error) {
 	return c, true, nil
 }
 
+// resetPool clears the pooled connection so the next call reconnects.
+func (s *Server) resetPool() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pool != nil {
+		s.pool.Close()
+		s.pool = nil
+	}
+}
+
 func (s *Server) execSSH(commands []string) (string, error) {
 	conn, pooled, err := s.getSSH()
 	if err != nil {
@@ -106,11 +128,17 @@ func (s *Server) execSSH(commands []string) (string, error) {
 	for _, cmd := range commands {
 		sess, err := conn.NewSession()
 		if err != nil {
+			if pooled {
+				s.resetPool()
+			}
 			return out.String(), fmt.Errorf("ssh session: %w", err)
 		}
 		b, err := sess.Output(cmd)
 		sess.Close()
 		if err != nil {
+			if pooled {
+				s.resetPool()
+			}
 			return out.String(), fmt.Errorf("ssh exec: %w", err)
 		}
 		out.Write(b)
@@ -164,26 +192,4 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	io.WriteString(w, out)
-}
-
-func selfSignedTLS() (*tls.Config, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-	}, nil
 }

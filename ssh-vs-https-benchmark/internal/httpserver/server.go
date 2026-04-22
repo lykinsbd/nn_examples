@@ -9,21 +9,15 @@
 package httpserver
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/device"
+	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/tlsutil"
 )
 
 // Server is an HTTPS server backed by a Device.
@@ -45,7 +39,7 @@ func (s *Server) SetListener(ln net.Listener) {
 
 // ListenAndServeTLS starts the HTTPS listener with a self-signed cert.
 func (s *Server) ListenAndServeTLS() error {
-	tlsCfg, err := selfSignedTLSConfig()
+	tlsCfg, err := tlsutil.SelfSignedConfig()
 	if err != nil {
 		return err
 	}
@@ -131,27 +125,4 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, out.String())
 }
 
-func selfSignedTLSConfig() (*tls.Config, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, fmt.Errorf("creating cert: %w", err)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{{
-			Certificate: [][]byte{certDER},
-			PrivateKey:  key,
-		}},
-	}, nil
-}
+

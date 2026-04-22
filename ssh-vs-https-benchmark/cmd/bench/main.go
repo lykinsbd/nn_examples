@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,41 +24,36 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// errDuration is a sentinel value indicating a failed iteration.
+const errDuration = time.Duration(-1)
+
 type Result struct {
 	Transport   string  `json:"transport"`
 	Operation   string  `json:"operation"`
 	Commands    int     `json:"commands"`
 	Iterations  int     `json:"iterations"`
+	Errors      int     `json:"errors"`
 	Concurrency int     `json:"concurrency"`
 	Latency     string  `json:"latency_profile"`
 	RTTms       float64 `json:"simulated_rtt_ms"`
-	TotalMs     float64 `json:"total_ms"`
 	AvgMs       float64 `json:"avg_ms"`
 	MinMs       float64 `json:"min_ms"`
 	MaxMs       float64 `json:"max_ms"`
+	P50Ms       float64 `json:"p50_ms"`
+	P95Ms       float64 `json:"p95_ms"`
+	StddevMs    float64 `json:"stddev_ms"`
 }
 
 // Latency profiles sourced from Verizon Enterprise monthly backbone
 // measurements (March 2026) and AWS/RIPE Atlas data.
 // See plans/ssh-vs-https-cli/latency-profiles.md for full citations.
 var latencyProfiles = map[string]time.Duration{
-	// 0ms added — baseline, co-located automation server
-	"local": 0,
-	// 1ms one-way (2ms RTT) — intra-DC / campus LAN
-	// Ref: AWS intra-AZ <1ms; Prisma 2024 report p50 1-2ms intra-region
-	"campus": 1 * time.Millisecond,
-	// 15ms one-way (30ms RTT) — intra-country / single region
-	// Ref: Verizon Mar 2026: US Private IP 29.9ms, Europe 15.2ms RTT
-	"regional": 15 * time.Millisecond,
-	// 35ms one-way (70ms RTT) — cross-continent / transatlantic
-	// Ref: Verizon Mar 2026: Transatlantic 70.2ms RTT (SLA ≤90ms)
-	"continental": 35 * time.Millisecond,
-	// 75ms one-way (150ms RTT) — US ↔ East Asia
-	// Ref: Verizon Mar 2026: HK-to-US 145.5ms RTT (SLA ≤230ms)
+	"local":            0,
+	"campus":           1 * time.Millisecond,
+	"regional":         15 * time.Millisecond,
+	"continental":      35 * time.Millisecond,
 	"intercontinental": 75 * time.Millisecond,
-	// 87ms one-way (175ms RTT) — US ↔ Australia/NZ
-	// Ref: Verizon Mar 2026: NZ Transpacific 174.2ms RTT (SLA ≤210ms)
-	"transpacific": 87 * time.Millisecond,
+	"transpacific":     87 * time.Millisecond,
 }
 
 func main() {
@@ -75,29 +72,23 @@ func main() {
 
 	delay, ok := latencyProfiles[*profile]
 	if !ok {
-		log.Fatalf("unknown latency profile %q (options: local, campus, regional, continental, intercontinental, transpacific)", *profile)
+		log.Fatalf("unknown latency profile %q", *profile)
 	}
 	rttMs := float64(delay.Milliseconds()) * 2
 
 	sshAddr := fmt.Sprintf("localhost:%d", *sshPort)
 	httpsAddr := fmt.Sprintf("localhost:%d", *httpsPort)
 
-	// Always embedded — start server with latency injection
 	dev, err := device.New("bench-rtr", *user, *pass, *transcriptsDir)
 	if err != nil {
 		log.Fatalf("device: %v", err)
 	}
 
+	// Start SSH server
 	sshLn, err := net.Listen("tcp", sshAddr)
 	if err != nil {
 		log.Fatalf("ssh listen: %v", err)
 	}
-	httpsLn, err := net.Listen("tcp", httpsAddr)
-	if err != nil {
-		log.Fatalf("https listen: %v", err)
-	}
-
-	// Wrap listeners with latency injection
 	sshSrv, err := sshserver.New(sshAddr, dev)
 	if err != nil {
 		log.Fatalf("ssh: %v", err)
@@ -105,13 +96,17 @@ func main() {
 	sshSrv.SetListener(&latencyPkg.Listener{Listener: sshLn, Delay: delay})
 	go sshSrv.ListenAndServe()
 
+	// Start HTTPS server
+	httpsLn, err := net.Listen("tcp", httpsAddr)
+	if err != nil {
+		log.Fatalf("https listen: %v", err)
+	}
 	httpSrv := httpserver.New(httpsAddr, dev)
 	httpSrv.SetListener(&latencyPkg.Listener{Listener: httpsLn, Delay: delay})
 	go httpSrv.ListenAndServeTLS()
 
-	// Proxy: HTTPS frontend with WAN latency → SSH backend with campus latency (1ms one-way)
+	// Proxy: HTTPS frontend (WAN latency) → SSH backend (campus latency)
 	proxyAddr := fmt.Sprintf("localhost:%d", *proxyPort)
-	// Backend SSH device gets campus-level latency (1ms one-way = 2ms RTT)
 	backendSSHPort := *sshPort + 1000
 	backendSSHAddr := fmt.Sprintf("localhost:%d", backendSSHPort)
 	backendLn, err := net.Listen("tcp", backendSSHAddr)
@@ -122,11 +117,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("backend ssh: %v", err)
 	}
-	campusDelay := 1 * time.Millisecond
-	backendSrv.SetListener(&latencyPkg.Listener{Listener: backendLn, Delay: campusDelay})
+	backendSrv.SetListener(&latencyPkg.Listener{Listener: backendLn, Delay: 1 * time.Millisecond})
 	go backendSrv.ListenAndServe()
 
-	// Proxy HTTPS listener gets WAN latency
 	proxyLn, err := net.Listen("tcp", proxyAddr)
 	if err != nil {
 		log.Fatalf("proxy listen: %v", err)
@@ -145,11 +138,7 @@ func main() {
 	go proxyPooled.ListenAndServeTLS()
 
 	time.Sleep(500 * time.Millisecond)
-	if delay > 0 {
-		log.Printf("Server ready — profile=%s, simulated RTT=%.0fms", *profile, rttMs)
-	} else {
-		log.Printf("Server ready — profile=local (no added latency)")
-	}
+	log.Printf("Server ready — profile=%s, simulated RTT=%.0fms", *profile, rttMs)
 
 	var results []Result
 
@@ -171,61 +160,68 @@ func main() {
 	enc.Encode(results)
 }
 
-func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
-	log.Printf("Benchmarking SSH (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
-
-	sshCfg := &ssh.ClientConfig{
+func sshConfig(user, pass string) *ssh.ClientConfig {
+	return &ssh.ClientConfig{
 		User:            user,
 		Auth:            []ssh.AuthMethod{ssh.Password(pass)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         30 * time.Second,
 	}
+}
+
+func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
+	log.Printf("Benchmarking SSH (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
+	cfg := sshConfig(user, pass)
 
 	// Mode 1: fresh connection per iteration
 	freshTimes := runParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
-		conn, err := ssh.Dial("tcp", addr, sshCfg)
+		conn, err := ssh.Dial("tcp", addr, cfg)
 		if err != nil {
 			log.Printf("ssh dial: %v", err)
-			return 0
+			return errDuration
 		}
 		defer conn.Close()
 		for i := 0; i < cmdsPerIter; i++ {
 			sess, err := conn.NewSession()
 			if err != nil {
 				log.Printf("ssh session: %v", err)
-				return 0
+				return errDuration
 			}
-			out, err := sess.Output("show version")
-			_ = out
+			_, err = sess.Output("show version")
 			sess.Close()
 			if err != nil {
 				log.Printf("ssh exec: %v", err)
+				return errDuration
 			}
 		}
 		return time.Since(start)
 	})
 
-	// Mode 2: reuse one connection across all iterations (ControlMaster-style)
-	// Open one SSH conn, then each iteration just opens a new exec session on it.
-	sharedConn, err := ssh.Dial("tcp", addr, sshCfg)
+	// Mode 2: reuse one connection (ControlMaster-style)
+	// Warmup: establish connection + one throwaway iteration
+	sharedConn, err := ssh.Dial("tcp", addr, cfg)
 	var reuseTimes []time.Duration
 	if err != nil {
 		log.Printf("ssh reuse dial: %v (skipping reuse test)", err)
 	} else {
+		if sess, err := sharedConn.NewSession(); err == nil {
+			sess.Output("show version")
+			sess.Close()
+		}
 		reuseTimes = runParallel(iterations, concurrency, func() time.Duration {
 			start := time.Now()
 			for i := 0; i < cmdsPerIter; i++ {
 				sess, err := sharedConn.NewSession()
 				if err != nil {
 					log.Printf("ssh reuse session: %v", err)
-					return 0
+					return errDuration
 				}
-				out, err := sess.Output("show version")
-				_ = out
+				_, err = sess.Output("show version")
 				sess.Close()
 				if err != nil {
 					log.Printf("ssh reuse exec: %v", err)
+					return errDuration
 				}
 			}
 			return time.Since(start)
@@ -233,26 +229,26 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 		sharedConn.Close()
 	}
 
-	// Mode 3: config push — send multi-line config over a single exec session
-	configLines := generateConfigBlock(cmdsPerIter)
-	configTimes := runParallel(iterations, concurrency, func() time.Duration {
+	// Mode 3: batch exec — send multi-line payload over a single exec session
+	batchPayload := generateExecPayload(cmdsPerIter)
+	batchTimes := runParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
-		conn, err := ssh.Dial("tcp", addr, sshCfg)
+		conn, err := ssh.Dial("tcp", addr, cfg)
 		if err != nil {
-			log.Printf("ssh config dial: %v", err)
-			return 0
+			log.Printf("ssh batch dial: %v", err)
+			return errDuration
 		}
 		defer conn.Close()
 		sess, err := conn.NewSession()
 		if err != nil {
-			log.Printf("ssh config session: %v", err)
-			return 0
+			log.Printf("ssh batch session: %v", err)
+			return errDuration
 		}
-		out, err := sess.Output(configLines)
-		_ = out
+		_, err = sess.Output(batchPayload)
 		sess.Close()
 		if err != nil {
-			log.Printf("ssh config exec: %v", err)
+			log.Printf("ssh batch exec: %v", err)
+			return errDuration
 		}
 		return time.Since(start)
 	})
@@ -263,88 +259,84 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 	if reuseTimes != nil {
 		results = append(results, summarize("ssh", "reuse-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes))
 	}
-	results = append(results, summarize("ssh", "config-push", cmdsPerIter, iterations, concurrency, profile, rttMs, configTimes))
+	results = append(results, summarize("ssh", "batch-exec", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes))
 	return results
 }
 
 func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
 	log.Printf("Benchmarking HTTPS (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
 
-	// Benchmark 1: fresh connection per iteration
+	tlsCfg := &tls.Config{InsecureSkipVerify: true}
+
+	// Mode 1: fresh connection per iteration (DisableKeepAlives)
 	freshTimes := runParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		client := &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig:   tlsCfg,
 				DisableKeepAlives: true,
 			},
 			Timeout: 30 * time.Second,
 		}
-
 		for i := 0; i < cmdsPerIter; i++ {
-			url := fmt.Sprintf("https://%s/admin/exec/show+version", addr)
-			req, _ := http.NewRequest("GET", url, nil)
-			req.SetBasicAuth(user, pass)
-			resp, err := client.Do(req)
-			if err != nil {
-				log.Printf("https: %v", err)
-				return 0
+			if err := doHTTPExec(client, addr, user, pass); err != nil {
+				log.Printf("https fresh: %v", err)
+				return errDuration
 			}
-			io.ReadAll(resp.Body)
-			resp.Body.Close()
 		}
 		return time.Since(start)
 	})
 
-	// Benchmark 2: reused connection (keep-alive)
+	// Mode 2: keep-alive — shared client across ALL iterations
+	keepAliveClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Timeout:   30 * time.Second,
+	}
+	// Warmup: one request to establish the TLS session
+	doHTTPExec(keepAliveClient, addr, user, pass)
+
 	reuseTimes := runParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
-		client := &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-			Timeout: 30 * time.Second,
-		}
-
 		for i := 0; i < cmdsPerIter; i++ {
-			url := fmt.Sprintf("https://%s/admin/exec/show+version", addr)
-			req, _ := http.NewRequest("GET", url, nil)
-			req.SetBasicAuth(user, pass)
-			resp, err := client.Do(req)
-			if err != nil {
-				log.Printf("https: %v", err)
-				return 0
+			if err := doHTTPExec(keepAliveClient, addr, user, pass); err != nil {
+				log.Printf("https keep-alive: %v", err)
+				return errDuration
 			}
-			io.ReadAll(resp.Body)
-			resp.Body.Close()
 		}
 		return time.Since(start)
 	})
 
-	// Benchmark 3: config push (POST /admin/config) — single request, all commands
-	configBody := generateConfigBlock(cmdsPerIter)
-	configTimes := runParallel(iterations, concurrency, func() time.Duration {
+	// Mode 3: batch POST — all commands in one request body
+	batchPayload := generateExecPayload(cmdsPerIter)
+	batchTimes := runParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		client := &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-			Timeout: 30 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: tlsCfg},
+			Timeout:   30 * time.Second,
 		}
 		url := fmt.Sprintf("https://%s/admin/config", addr)
-		req, _ := http.NewRequest("POST", url, strings.NewReader(configBody))
+		req, err := http.NewRequest("POST", url, strings.NewReader(batchPayload))
+		if err != nil {
+			return errDuration
+		}
 		req.SetBasicAuth(user, pass)
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("https config: %v", err)
-			return 0
+			log.Printf("https batch: %v", err)
+			return errDuration
 		}
 		io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return time.Since(start)
 	})
 
-	// Benchmark 4: multi-command in single GET (ASA slash syntax) — only if >1 cmd
+	results := []Result{
+		summarize("https", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
+		summarize("https", "keep-alive", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes),
+		summarize("https", "batch-post", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes),
+	}
+
+	// Mode 4: multi-command GET (ASA slash syntax) — only if >1 cmd
 	if cmdsPerIter > 1 {
 		cmdParts := make([]string, cmdsPerIter)
 		for i := range cmdParts {
@@ -355,81 +347,60 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 		multiTimes := runParallel(iterations, concurrency, func() time.Duration {
 			start := time.Now()
 			client := &http.Client{
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				},
-				Timeout: 30 * time.Second,
+				Transport: &http.Transport{TLSClientConfig: tlsCfg},
+				Timeout:   30 * time.Second,
 			}
 			url := fmt.Sprintf("https://%s/admin/exec/%s", addr, multiPath)
-			req, _ := http.NewRequest("GET", url, nil)
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				return errDuration
+			}
 			req.SetBasicAuth(user, pass)
 			resp, err := client.Do(req)
 			if err != nil {
-				log.Printf("https: %v", err)
-				return 0
+				log.Printf("https multi: %v", err)
+				return errDuration
 			}
 			io.ReadAll(resp.Body)
 			resp.Body.Close()
 			return time.Since(start)
 		})
-
-		return []Result{
-			summarize("https", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
-			summarize("https", "keep-alive", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes),
-			summarize("https", "multi-cmd", cmdsPerIter, iterations, concurrency, profile, rttMs, multiTimes),
-			summarize("https", "config-push", cmdsPerIter, iterations, concurrency, profile, rttMs, configTimes),
-		}
+		results = append(results, summarize("https", "multi-cmd", cmdsPerIter, iterations, concurrency, profile, rttMs, multiTimes))
 	}
 
-	return []Result{
-		summarize("https", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
-		summarize("https", "keep-alive", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes),
-		summarize("https", "config-push", cmdsPerIter, iterations, concurrency, profile, rttMs, configTimes),
-	}
+	return results
 }
 
 func benchProxy(freshAddr, pooledAddr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
 	log.Printf("Benchmarking Proxy (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
 
-	// Proxy with fresh SSH to backend per request
-	freshTimes := runParallel(iterations, concurrency, func() time.Duration {
-		start := time.Now()
-		configBody := generateConfigBlock(cmdsPerIter)
-		client := &http.Client{
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-			Timeout:   30 * time.Second,
-		}
-		url := fmt.Sprintf("https://%s/admin/config", freshAddr)
-		req, _ := http.NewRequest("POST", url, strings.NewReader(configBody))
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("proxy fresh: %v", err)
-			return 0
-		}
-		io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return time.Since(start)
-	})
+	tlsCfg := &tls.Config{InsecureSkipVerify: true}
+	payload := generateExecPayload(cmdsPerIter)
 
-	// Proxy with pooled SSH to backend
-	pooledTimes := runParallel(iterations, concurrency, func() time.Duration {
+	doProxy := func(addr string) time.Duration {
 		start := time.Now()
-		configBody := generateConfigBlock(cmdsPerIter)
 		client := &http.Client{
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 			Timeout:   30 * time.Second,
 		}
-		url := fmt.Sprintf("https://%s/admin/config", pooledAddr)
-		req, _ := http.NewRequest("POST", url, strings.NewReader(configBody))
+		url := fmt.Sprintf("https://%s/admin/config", addr)
+		req, err := http.NewRequest("POST", url, strings.NewReader(payload))
+		if err != nil {
+			return errDuration
+		}
+		req.SetBasicAuth(user, pass)
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("proxy pooled: %v", err)
-			return 0
+			log.Printf("proxy: %v", err)
+			return errDuration
 		}
 		io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return time.Since(start)
-	})
+	}
+
+	freshTimes := runParallel(iterations, concurrency, func() time.Duration { return doProxy(freshAddr) })
+	pooledTimes := runParallel(iterations, concurrency, func() time.Duration { return doProxy(pooledAddr) })
 
 	return []Result{
 		summarize("proxy", "fresh-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
@@ -437,9 +408,25 @@ func benchProxy(freshAddr, pooledAddr, user, pass string, iterations, concurrenc
 	}
 }
 
-// generateConfigBlock creates a newline-delimited string of N show commands,
-// simulating a config push payload.
-func generateConfigBlock(n int) string {
+// doHTTPExec sends a single show+version GET and drains the response.
+func doHTTPExec(client *http.Client, addr, user, pass string) error {
+	url := fmt.Sprintf("https://%s/admin/exec/show+version", addr)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(user, pass)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return nil
+}
+
+// generateExecPayload creates a newline-delimited string of N show commands.
+func generateExecPayload(n int) string {
 	var b strings.Builder
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&b, "show version\n")
@@ -470,29 +457,72 @@ func runParallel(iterations, concurrency int, fn func() time.Duration) []time.Du
 }
 
 func summarize(transport, op string, cmds, iterations, concurrency int, profile string, rttMs float64, times []time.Duration) Result {
-	var total, min, max time.Duration
-	min = time.Hour
+	// Filter out errors (errDuration sentinel)
+	valid := make([]float64, 0, len(times))
+	errors := 0
 	for _, t := range times {
-		total += t
-		if t < min {
-			min = t
+		if t == errDuration {
+			errors++
+			continue
 		}
-		if t > max {
-			max = t
+		valid = append(valid, float64(t.Microseconds())/1000)
+	}
+	if errors > 0 {
+		log.Printf("  %s/%s: %d/%d iterations failed", transport, op, errors, iterations)
+	}
+	if len(valid) == 0 {
+		return Result{
+			Transport: transport, Operation: op, Commands: cmds,
+			Iterations: iterations, Errors: errors, Concurrency: concurrency,
+			Latency: profile, RTTms: rttMs,
 		}
 	}
-	avg := total / time.Duration(len(times))
+
+	sort.Float64s(valid)
+	n := len(valid)
+
+	var sum float64
+	for _, v := range valid {
+		sum += v
+	}
+	avg := sum / float64(n)
+
+	var variance float64
+	for _, v := range valid {
+		d := v - avg
+		variance += d * d
+	}
+	stddev := math.Sqrt(variance / float64(n))
+
 	return Result{
 		Transport:   transport,
 		Operation:   op,
 		Commands:    cmds,
 		Iterations:  iterations,
+		Errors:      errors,
 		Concurrency: concurrency,
 		Latency:     profile,
 		RTTms:       rttMs,
-		TotalMs:     float64(total.Microseconds()) / 1000,
-		AvgMs:       float64(avg.Microseconds()) / 1000,
-		MinMs:       float64(min.Microseconds()) / 1000,
-		MaxMs:       float64(max.Microseconds()) / 1000,
+		AvgMs:       avg,
+		MinMs:       valid[0],
+		MaxMs:       valid[n-1],
+		P50Ms:       percentile(valid, 50),
+		P95Ms:       percentile(valid, 95),
+		StddevMs:    stddev,
 	}
+}
+
+// percentile returns the p-th percentile from a sorted slice.
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	rank := (p / 100) * float64(len(sorted)-1)
+	lower := int(rank)
+	upper := lower + 1
+	if upper >= len(sorted) {
+		return sorted[len(sorted)-1]
+	}
+	frac := rank - float64(lower)
+	return sorted[lower] + frac*(sorted[upper]-sorted[lower])
 }

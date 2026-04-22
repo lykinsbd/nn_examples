@@ -1,16 +1,25 @@
 // Package latency provides a net.Listener wrapper that adds artificial
-// one-way delay to every connection, simulating real network latency.
+// delay to connections, simulating real network latency.
 //
-// The delay is applied to both Read and Write, so a configured delay of
-// 35ms produces ~70ms RTT — matching real-world measurements.
+// The delay model is simplified: each Read or Write that follows a
+// direction change (read→write or write→read) incurs the configured
+// one-way delay, simulating a network round trip. Consecutive operations
+// in the same direction proceed without additional delay, modeling TCP
+// stream behavior where multiple writes are coalesced into one flight.
+//
+// This is more realistic than sleeping on every syscall (which would
+// over-penalize protocols that do many small reads), but less accurate
+// than kernel-level simulation (tc netem). See the README for a full
+// discussion of the tradeoffs.
 package latency
 
 import (
 	"net"
+	"sync"
 	"time"
 )
 
-// Listener wraps a net.Listener, injecting one-way delay on accepted connections.
+// Listener wraps a net.Listener, injecting delay on accepted connections.
 type Listener struct {
 	net.Listener
 	Delay time.Duration
@@ -28,18 +37,34 @@ func (l *Listener) Accept() (net.Conn, error) {
 	return &delayConn{Conn: c, delay: l.Delay}, nil
 }
 
-// delayConn wraps a net.Conn, adding one-way delay to Read and Write.
+// delayConn wraps a net.Conn, adding one-way delay on direction changes.
 type delayConn struct {
 	net.Conn
-	delay time.Duration
+	delay   time.Duration
+	mu      sync.Mutex
+	lastDir int // 0=none, 1=read, 2=write
 }
 
 func (c *delayConn) Read(b []byte) (int, error) {
-	time.Sleep(c.delay)
+	c.mu.Lock()
+	if c.lastDir != 1 {
+		c.lastDir = 1
+		c.mu.Unlock()
+		time.Sleep(c.delay)
+	} else {
+		c.mu.Unlock()
+	}
 	return c.Conn.Read(b)
 }
 
 func (c *delayConn) Write(b []byte) (int, error) {
-	time.Sleep(c.delay)
+	c.mu.Lock()
+	if c.lastDir != 2 {
+		c.lastDir = 2
+		c.mu.Unlock()
+		time.Sleep(c.delay)
+	} else {
+		c.mu.Unlock()
+	}
 	return c.Conn.Write(b)
 }
