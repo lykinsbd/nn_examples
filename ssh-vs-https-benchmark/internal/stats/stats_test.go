@@ -70,15 +70,17 @@ func TestSummarizeBasic(t *testing.T) {
 }
 
 func TestStddevKnownValues(t *testing.T) {
-	// [2,4,4,4,5,5,7,9] ms → mean=5, population stddev=2.0
+	// [2,4,4,4,5,5,7,9] ms → mean=5, sum of squared deviations=32
+	// sample stddev = sqrt(32/7) ≈ 2.1381
 	times := make([]time.Duration, 8)
 	vals := []int{2, 4, 4, 4, 5, 5, 7, 9}
 	for i, v := range vals {
 		times[i] = time.Duration(v) * time.Millisecond
 	}
 	r := Summarize("t", "op", 1, 8, 1, "local", 0, times)
-	if math.Abs(r.StddevMs-2.0) > 0.01 {
-		t.Errorf("stddev = %v, want 2.0", r.StddevMs)
+	want := math.Sqrt(32.0 / 7.0) // ≈ 2.1381
+	if math.Abs(r.StddevMs-want) > 0.01 {
+		t.Errorf("stddev = %v, want %v", r.StddevMs, want)
 	}
 }
 

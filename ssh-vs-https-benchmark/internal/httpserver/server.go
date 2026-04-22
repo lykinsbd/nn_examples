@@ -10,6 +10,7 @@ package httpserver
 
 import (
 	"crypto/tls"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -24,7 +25,8 @@ import (
 type Server struct {
 	dev      *device.Device
 	addr     string
-	listener net.Listener // optional: set before ListenAndServeTLS to use custom listener
+	listener net.Listener
+	srv      *http.Server
 }
 
 // New creates an HTTPS server on addr backed by dev.
@@ -37,7 +39,24 @@ func (s *Server) SetListener(ln net.Listener) {
 	s.listener = ln
 }
 
+// Addr returns the listener's address, or "" if not yet listening.
+func (s *Server) Addr() string {
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return ""
+}
+
+// Close stops the server gracefully.
+func (s *Server) Close() error {
+	if s.srv != nil {
+		return s.srv.Close()
+	}
+	return nil
+}
+
 // ListenAndServeTLS starts the HTTPS listener with a self-signed cert.
+// It returns nil when the server is closed via Close().
 func (s *Server) ListenAndServeTLS() error {
 	tlsCfg, err := tlsutil.SelfSignedConfig()
 	if err != nil {
@@ -48,22 +67,24 @@ func (s *Server) ListenAndServeTLS() error {
 	mux.HandleFunc("/admin/exec/", s.handleExec)
 	mux.HandleFunc("/admin/config", s.handleConfig)
 
-	srv := &http.Server{
-		Addr:      s.addr,
+	s.srv = &http.Server{
 		Handler:   s.authMiddleware(mux),
 		TLSConfig: tlsCfg,
 	}
 
-	baseLn := s.listener
-	if baseLn == nil {
-		baseLn, err = net.Listen("tcp", s.addr)
+	if s.listener == nil {
+		s.listener, err = net.Listen("tcp", s.addr)
 		if err != nil {
 			return err
 		}
 	}
-	ln := tls.NewListener(baseLn, tlsCfg)
-	log.Printf("HTTPS listening on %s", baseLn.Addr())
-	return srv.Serve(ln)
+	ln := tls.NewListener(s.listener, tlsCfg)
+	log.Printf("HTTPS listening on %s", s.listener.Addr())
+	err = s.srv.Serve(ln)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {

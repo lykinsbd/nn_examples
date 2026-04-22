@@ -5,6 +5,7 @@ package sshserver
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,7 +21,7 @@ type Server struct {
 	dev      *device.Device
 	cfg      *ssh.ServerConfig
 	addr     string
-	listener net.Listener // optional: set before ListenAndServe to use custom listener
+	listener net.Listener
 }
 
 // New creates an SSH server on addr backed by dev.
@@ -52,22 +53,40 @@ func (s *Server) SetListener(ln net.Listener) {
 	s.listener = ln
 }
 
+// Addr returns the listener's address, or "" if not yet listening.
+func (s *Server) Addr() string {
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return ""
+}
+
+// Close stops the server by closing the listener.
+func (s *Server) Close() error {
+	if s.listener != nil {
+		return s.listener.Close()
+	}
+	return nil
+}
+
 // ListenAndServe starts accepting SSH connections.
+// It returns nil when the listener is closed via Close().
 func (s *Server) ListenAndServe() error {
-	ln := s.listener
-	if ln == nil {
-		var err error
-		ln, err = net.Listen("tcp", s.addr)
+	if s.listener == nil {
+		ln, err := net.Listen("tcp", s.addr)
 		if err != nil {
 			return err
 		}
+		s.listener = ln
 	}
-	log.Printf("SSH listening on %s", ln.Addr())
+	log.Printf("SSH listening on %s", s.listener.Addr())
 	for {
-		conn, err := ln.Accept()
+		conn, err := s.listener.Accept()
 		if err != nil {
-			log.Printf("ssh accept: %v", err)
-			continue
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
 		}
 		go s.handleConn(conn)
 	}

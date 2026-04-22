@@ -68,7 +68,10 @@ func Summarize(transport, op string, cmds, iterations, concurrency int, profile 
 		d := v - avg
 		variance += d * d
 	}
-	stddev := math.Sqrt(variance / float64(n))
+	var stddev float64
+	if n > 1 {
+		stddev = math.Sqrt(variance / float64(n-1))
+	}
 
 	return Result{
 		Transport:   transport,

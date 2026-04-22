@@ -6,6 +6,7 @@ package proxy
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,7 @@ type Server struct {
 	mu          sync.Mutex
 	pool        *ssh.Client
 	listener    net.Listener
+	srv         *http.Server
 }
 
 // New creates a proxy server. If pooled is true, one SSH connection
@@ -53,7 +55,24 @@ func New(addr, backendAddr, user, pass string, pooled bool) *Server {
 // SetListener sets a custom net.Listener (e.g., with latency injection).
 func (s *Server) SetListener(ln net.Listener) { s.listener = ln }
 
+// Addr returns the listener's address, or "" if not yet listening.
+func (s *Server) Addr() string {
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return ""
+}
+
+// Close stops the proxy server.
+func (s *Server) Close() error {
+	if s.srv != nil {
+		return s.srv.Close()
+	}
+	return nil
+}
+
 // ListenAndServeTLS starts the HTTPS proxy.
+// It returns nil when the server is closed via Close().
 func (s *Server) ListenAndServeTLS() error {
 	tlsCfg, err := tlsutil.SelfSignedConfig()
 	if err != nil {
@@ -63,16 +82,20 @@ func (s *Server) ListenAndServeTLS() error {
 	mux.HandleFunc("/admin/exec/", s.handleExec)
 	mux.HandleFunc("/admin/config", s.handleConfig)
 
-	baseLn := s.listener
-	if baseLn == nil {
-		baseLn, err = net.Listen("tcp", s.addr)
+	if s.listener == nil {
+		s.listener, err = net.Listen("tcp", s.addr)
 		if err != nil {
 			return err
 		}
 	}
-	ln := tls.NewListener(baseLn, tlsCfg)
-	log.Printf("Proxy HTTPS listening on %s → SSH backend %s (pooled=%v)", baseLn.Addr(), s.backendAddr, s.pooled)
-	return (&http.Server{Handler: s.authMiddleware(mux), TLSConfig: tlsCfg}).Serve(ln)
+	ln := tls.NewListener(s.listener, tlsCfg)
+	s.srv = &http.Server{Handler: s.authMiddleware(mux), TLSConfig: tlsCfg}
+	log.Printf("Proxy HTTPS listening on %s → SSH backend %s (pooled=%v)", s.listener.Addr(), s.backendAddr, s.pooled)
+	err = s.srv.Serve(ln)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
