@@ -19,6 +19,7 @@ import (
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/device"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/httpserver"
 	latencyPkg "github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/latency"
+	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/netem"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/proxy"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/sshserver"
 	"golang.org/x/crypto/ssh"
@@ -68,6 +69,7 @@ func main() {
 	profile := flag.String("latency", "local", "Latency profile")
 	proxyPort := flag.Int("proxy-port", 9443, "Proxy HTTPS listen port")
 	transcriptsDir := flag.String("transcripts", "transcripts", "Transcript dir")
+	userspace := flag.Bool("userspace", false, "Use userspace latency injection instead of tc netem (no root required)")
 	flag.Parse()
 
 	delay, ok := latencyProfiles[*profile]
@@ -84,6 +86,35 @@ func main() {
 		log.Fatalf("device: %v", err)
 	}
 
+	backendSSHPort := *sshPort + 1000
+	backendSSHAddr := fmt.Sprintf("localhost:%d", backendSSHPort)
+	proxyAddr := fmt.Sprintf("localhost:%d", *proxyPort)
+	proxyPooledAddr := fmt.Sprintf("localhost:%d", *proxyPort+1)
+	campusDelay := 1 * time.Millisecond
+
+	// Set up latency injection
+	if !*userspace && delay > 0 {
+		// tc netem: kernel-level delay on loopback, per-port
+		wanPorts := []int{*sshPort, *httpsPort, *proxyPort, *proxyPort + 1}
+		campusPorts := []int{backendSSHPort}
+		if err := netem.Setup(delay, campusDelay, wanPorts, campusPorts); err != nil {
+			log.Fatalf("tc netem setup (requires sudo): %v", err)
+		}
+		defer netem.Teardown()
+		log.Printf("tc netem: %dms one-way on ports %v, %dms on ports %v",
+			delay.Milliseconds(), wanPorts, campusDelay.Milliseconds(), campusPorts)
+	} else if *userspace && delay > 0 {
+		log.Printf("Using userspace latency injection (less accurate than tc netem)")
+	}
+
+	// wrapListener applies userspace delay if in userspace mode, otherwise returns the listener as-is.
+	wrapListener := func(ln net.Listener, d time.Duration) net.Listener {
+		if *userspace && d > 0 {
+			return &latencyPkg.Listener{Listener: ln, Delay: d}
+		}
+		return ln
+	}
+
 	// Start SSH server
 	sshLn, err := net.Listen("tcp", sshAddr)
 	if err != nil {
@@ -93,7 +124,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("ssh: %v", err)
 	}
-	sshSrv.SetListener(&latencyPkg.Listener{Listener: sshLn, Delay: delay})
+	sshSrv.SetListener(wrapListener(sshLn, delay))
 	go sshSrv.ListenAndServe()
 
 	// Start HTTPS server
@@ -102,13 +133,10 @@ func main() {
 		log.Fatalf("https listen: %v", err)
 	}
 	httpSrv := httpserver.New(httpsAddr, dev)
-	httpSrv.SetListener(&latencyPkg.Listener{Listener: httpsLn, Delay: delay})
+	httpSrv.SetListener(wrapListener(httpsLn, delay))
 	go httpSrv.ListenAndServeTLS()
 
 	// Proxy: HTTPS frontend (WAN latency) → SSH backend (campus latency)
-	proxyAddr := fmt.Sprintf("localhost:%d", *proxyPort)
-	backendSSHPort := *sshPort + 1000
-	backendSSHAddr := fmt.Sprintf("localhost:%d", backendSSHPort)
 	backendLn, err := net.Listen("tcp", backendSSHAddr)
 	if err != nil {
 		log.Fatalf("backend ssh listen: %v", err)
@@ -117,7 +145,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("backend ssh: %v", err)
 	}
-	backendSrv.SetListener(&latencyPkg.Listener{Listener: backendLn, Delay: 1 * time.Millisecond})
+	backendSrv.SetListener(wrapListener(backendLn, campusDelay))
 	go backendSrv.ListenAndServe()
 
 	proxyLn, err := net.Listen("tcp", proxyAddr)
@@ -125,16 +153,15 @@ func main() {
 		log.Fatalf("proxy listen: %v", err)
 	}
 	proxyFresh := proxy.New(proxyAddr, backendSSHAddr, *user, *pass, false)
-	proxyFresh.SetListener(&latencyPkg.Listener{Listener: proxyLn, Delay: delay})
+	proxyFresh.SetListener(wrapListener(proxyLn, delay))
 	go proxyFresh.ListenAndServeTLS()
 
-	proxyPooledAddr := fmt.Sprintf("localhost:%d", *proxyPort+1)
 	proxyPooledLn, err := net.Listen("tcp", proxyPooledAddr)
 	if err != nil {
 		log.Fatalf("proxy-pooled listen: %v", err)
 	}
 	proxyPooled := proxy.New(proxyPooledAddr, backendSSHAddr, *user, *pass, true)
-	proxyPooled.SetListener(&latencyPkg.Listener{Listener: proxyPooledLn, Delay: delay})
+	proxyPooled.SetListener(wrapListener(proxyPooledLn, delay))
 	go proxyPooled.ListenAndServeTLS()
 
 	time.Sleep(500 * time.Millisecond)

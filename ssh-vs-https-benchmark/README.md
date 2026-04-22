@@ -21,13 +21,15 @@ the only variable is the transport protocol itself.
 
 ## Quick Start
 
+Requires Linux with `tc` (iproute2) and `sudo` for latency injection.
+
 ```bash
 go build -o bin/bench ./cmd/bench/
 
-# Baseline (no latency)
+# Baseline (no latency, no sudo needed)
 ./bin/bench -latency local -iterations 50 -commands 5
 
-# Simulated US backbone (30ms RTT)
+# Simulated US backbone (30ms RTT, requires sudo)
 ./bin/bench -latency regional -iterations 20 -commands 5
 
 # Simulated US↔Hong Kong (150ms RTT)
@@ -35,6 +37,9 @@ go build -o bin/bench ./cmd/bench/
 
 # Proxy mode only
 ./bin/bench -latency regional -iterations 20 -commands 5 -transport proxy
+
+# Fallback: userspace delay injection (no sudo, less accurate)
+./bin/bench -latency regional -iterations 20 -commands 5 -userspace
 ```
 
 Output is JSON to stdout. Logs go to stderr.
@@ -68,23 +73,54 @@ Source: [Verizon Enterprise Monthly IP Latency Statistics](https://www.verizon.c
 
 ## Methodology and Caveats
 
-### How latency injection works
+### How latency injection works (default: tc netem)
 
-Latency is injected at the `net.Conn` level using a wrapper that adds a
-configurable one-way delay. The delay fires on **direction changes** — when
-a connection switches from reading to writing or vice versa — not on every
-individual `Read()` or `Write()` syscall. This models the fact that
-consecutive writes in the same direction are typically coalesced into a
-single TCP flight, while a direction change (e.g., sending a request then
-waiting for a response) incurs a network round trip.
+By default, the benchmark uses Linux `tc netem` to inject delay at the
+kernel level on the loopback interface. A `prio` qdisc with `u32` filters
+applies per-port delay so that only benchmark traffic is affected:
 
-### What this does NOT model
+- **WAN ports** (SSH, HTTPS, proxy frontend): configured one-way delay
+  (e.g., 15ms for 30ms RTT)
+- **Campus port** (proxy backend SSH): fixed 1ms one-way delay (2ms RTT),
+  simulating a co-located proxy
+- **All other loopback traffic**: unaffected (default band, no delay)
+
+Because `netem` operates in the kernel's network stack, it captures real
+TCP behavior: Nagle's algorithm, delayed ACKs, TCP window scaling, and
+proper per-packet delay in both directions. This is the most accurate
+simulation short of running on separate physical hosts.
+
+Requires `sudo` (or `CAP_NET_ADMIN`). The tool sets up the qdisc before
+benchmarking and tears it down on exit (including on `SIGINT`).
+
+### Fallback: userspace delay injection (-userspace flag)
+
+For environments where `sudo` isn't available, the `-userspace` flag
+enables an in-process delay model. This wraps each `net.Conn` with a
+wrapper that sleeps on direction changes (read→write or write→read).
+
+The userspace model has known limitations:
+
+- **It under-counts SSH round trips.** Go's `crypto/ssh` library
+  pipelines multiple SSH messages into single writes, so logically
+  separate protocol exchanges (channel-open, exec-request, data) get
+  coalesced into fewer direction changes than they would incur as
+  separate network round trips.
+- **It over-counts HTTPS fresh-connection overhead.** Go's TLS
+  implementation does multiple small writes during the handshake that
+  each trigger direction-change delays, whereas a real kernel would
+  coalesce them into fewer TCP segments.
+- **It doesn't model kernel TCP behavior.** Nagle's algorithm, delayed
+  ACKs, and TCP window scaling are not captured.
+
+The net effect is that userspace mode compresses the gap between SSH and
+HTTPS compared to real networks. The published blog numbers all use
+`tc netem`.
+
+### What neither model captures
 
 - **TCP congestion, packet loss, or jitter.** All connections are
   localhost with deterministic delay. Real networks have variance.
-- **Kernel-level TCP behavior.** Tools like `tc netem` inject delay at the
-  kernel level and capture effects like Nagle's algorithm, delayed ACKs,
-  and TCP window scaling. Our userspace wrapper cannot replicate these.
 - **Real device processing time.** The emulated device responds instantly.
   Real devices have CPU overhead for parsing, AAA lookups, and command
   execution that adds to total latency.
@@ -105,21 +141,6 @@ handshake has higher CPU overhead than the SSH handshake. The HTTPS
 advantage only appears when network latency dominates, which is the
 scenario the blog series focuses on.
 
-### Reproducing with tc netem
-
-For kernel-level validation on Linux:
-
-```bash
-# Add 15ms one-way delay to loopback (30ms RTT)
-sudo tc qdisc add dev lo root netem delay 15ms
-
-# Run benchmark without the built-in latency injection
-./bin/bench -latency local -iterations 20 -commands 5
-
-# Clean up
-sudo tc qdisc del dev lo root
-```
-
 ## Running Tests
 
 ```bash
@@ -129,8 +150,9 @@ go test -race ./...
 ## Sample Results
 
 The `results/` directory contains sample JSON output from benchmark runs.
-These are generated with small iteration counts for illustration; the blog
-series uses n=20 for all published numbers.
+Files prefixed with `netem-` use `tc netem`; others use the userspace
+fallback. The blog series uses `tc netem` results at n=20 for all
+published numbers.
 
 ## Project Structure
 
@@ -143,7 +165,8 @@ internal/
   device/     # Command engine, prefix matching, transcript loading
   sshserver/  # crypto/ssh server
   httpserver/ # net/http + TLS server (ASA-style API)
-  latency/    # TCP connection delay injection (direction-change model)
+  latency/    # Userspace delay injection (fallback, -userspace flag)
+  netem/      # tc netem latency injection (default, requires sudo)
   proxy/      # HTTPS→SSH edge proxy (fresh + pooled modes)
   tlsutil/    # Shared self-signed TLS config generator
 transcripts/  # Canned command output files
