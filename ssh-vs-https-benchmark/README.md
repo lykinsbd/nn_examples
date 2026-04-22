@@ -21,24 +21,24 @@ the only variable is the transport protocol itself.
 
 ## Quick Start
 
-Requires Linux with `tc` (iproute2) and `sudo` for latency injection.
+Requires Linux with `tc` (iproute2) and root (or `CAP_NET_ADMIN`) for latency injection.
 
 ```bash
 go build -o bin/bench ./cmd/bench/
 
-# Baseline (no latency, no sudo needed)
+# Baseline (no latency, no root needed)
 ./bin/bench -latency local -iterations 50 -commands 5
 
-# Simulated US backbone (30ms RTT, requires sudo)
-./bin/bench -latency regional -iterations 20 -commands 5
+# Simulated US backbone (30ms RTT, requires root)
+sudo ./bin/bench -latency regional -iterations 20 -commands 5
 
 # Simulated US↔Hong Kong (150ms RTT)
-./bin/bench -latency intercontinental -iterations 20 -commands 5
+sudo ./bin/bench -latency intercontinental -iterations 20 -commands 5
 
 # Proxy mode only
-./bin/bench -latency regional -iterations 20 -commands 5 -transport proxy
+sudo ./bin/bench -latency regional -iterations 20 -commands 5 -transport proxy
 
-# Fallback: userspace delay injection (no sudo, less accurate)
+# Fallback: userspace delay injection (no root, less accurate)
 ./bin/bench -latency regional -iterations 20 -commands 5 -userspace
 ```
 
@@ -76,8 +76,10 @@ Source: [Verizon Enterprise Monthly IP Latency Statistics](https://www.verizon.c
 ### How latency injection works (default: tc netem)
 
 By default, the benchmark uses Linux `tc netem` to inject delay at the
-kernel level on the loopback interface. A `prio` qdisc with `u32` filters
-applies per-port delay so that only benchmark traffic is affected:
+kernel level on the loopback interface. Qdiscs are configured via the
+[`vishvananda/netlink`](https://github.com/vishvananda/netlink) library
+(the same netlink library used by Docker and Kubernetes); per-port `u32`
+filters use `tc`(8). A `prio` qdisc routes traffic by port:
 
 - **WAN ports** (SSH, HTTPS, proxy frontend): configured one-way delay
   (e.g., 15ms for 30ms RTT)
@@ -90,8 +92,8 @@ TCP behavior: Nagle's algorithm, delayed ACKs, TCP window scaling, and
 proper per-packet delay in both directions. This is the most accurate
 simulation short of running on separate physical hosts.
 
-Requires `sudo` (or `CAP_NET_ADMIN`). The tool sets up the qdisc before
-benchmarking and tears it down on exit (including on `SIGINT`).
+Requires root or `CAP_NET_ADMIN`. The tool sets up the qdisc before
+benchmarking and tears it down on exit.
 
 ### Fallback: userspace delay injection (-userspace flag)
 
@@ -166,7 +168,7 @@ internal/
   sshserver/  # crypto/ssh server
   httpserver/ # net/http + TLS server (ASA-style API)
   latency/    # Userspace delay injection (fallback, -userspace flag)
-  netem/      # tc netem latency injection (default, requires sudo)
+  netem/      # tc netem setup via netlink + tc(8) (default, requires root)
   proxy/      # HTTPS→SSH edge proxy (fresh + pooled modes)
   tlsutil/    # Shared self-signed TLS config generator
 transcripts/  # Canned command output files
