@@ -7,13 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/device"
@@ -22,28 +19,12 @@ import (
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/netem"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/proxy"
 	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/sshserver"
+	"github.com/lykinsbd/nn_examples/ssh-vs-https-benchmark/internal/stats"
 	"golang.org/x/crypto/ssh"
 )
 
 // errDuration is a sentinel value indicating a failed iteration.
-const errDuration = time.Duration(-1)
-
-type Result struct {
-	Transport   string  `json:"transport"`
-	Operation   string  `json:"operation"`
-	Commands    int     `json:"commands"`
-	Iterations  int     `json:"iterations"`
-	Errors      int     `json:"errors"`
-	Concurrency int     `json:"concurrency"`
-	Latency     string  `json:"latency_profile"`
-	RTTms       float64 `json:"simulated_rtt_ms"`
-	AvgMs       float64 `json:"avg_ms"`
-	MinMs       float64 `json:"min_ms"`
-	MaxMs       float64 `json:"max_ms"`
-	P50Ms       float64 `json:"p50_ms"`
-	P95Ms       float64 `json:"p95_ms"`
-	StddevMs    float64 `json:"stddev_ms"`
-}
+var errDuration = stats.ErrDuration
 
 // Latency profiles sourced from Verizon Enterprise monthly backbone
 // measurements (March 2026) and AWS/RIPE Atlas data.
@@ -167,7 +148,7 @@ func main() {
 	time.Sleep(500 * time.Millisecond)
 	log.Printf("Server ready — profile=%s, simulated RTT=%.0fms", *profile, rttMs)
 
-	var results []Result
+	var results []stats.Result
 
 	if *transport == "ssh" || *transport == "both" {
 		r := benchSSH(sshAddr, *user, *pass, *iterations, *concurrency, *commands, *profile, rttMs)
@@ -196,12 +177,12 @@ func sshConfig(user, pass string) *ssh.ClientConfig {
 	}
 }
 
-func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
+func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []stats.Result {
 	log.Printf("Benchmarking SSH (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
 	cfg := sshConfig(user, pass)
 
 	// Mode 1: fresh connection per iteration
-	freshTimes := runParallel(iterations, concurrency, func() time.Duration {
+	freshTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		conn, err := ssh.Dial("tcp", addr, cfg)
 		if err != nil {
@@ -236,7 +217,7 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 			sess.Output("show version")
 			sess.Close()
 		}
-		reuseTimes = runParallel(iterations, concurrency, func() time.Duration {
+		reuseTimes = stats.RunParallel(iterations, concurrency, func() time.Duration {
 			start := time.Now()
 			for i := 0; i < cmdsPerIter; i++ {
 				sess, err := sharedConn.NewSession()
@@ -257,8 +238,8 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 	}
 
 	// Mode 3: batch exec — send multi-line payload over a single exec session
-	batchPayload := generateExecPayload(cmdsPerIter)
-	batchTimes := runParallel(iterations, concurrency, func() time.Duration {
+	batchPayload := stats.GenerateExecPayload(cmdsPerIter)
+	batchTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		conn, err := ssh.Dial("tcp", addr, cfg)
 		if err != nil {
@@ -280,23 +261,23 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 		return time.Since(start)
 	})
 
-	results := []Result{
-		summarize("ssh", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
+	results := []stats.Result{
+		stats.Summarize("ssh", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
 	}
 	if reuseTimes != nil {
-		results = append(results, summarize("ssh", "reuse-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes))
+		results = append(results, stats.Summarize("ssh", "reuse-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes))
 	}
-	results = append(results, summarize("ssh", "batch-exec", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes))
+	results = append(results, stats.Summarize("ssh", "batch-exec", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes))
 	return results
 }
 
-func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
+func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []stats.Result {
 	log.Printf("Benchmarking HTTPS (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
 
 	tlsCfg := &tls.Config{InsecureSkipVerify: true}
 
 	// Mode 1: fresh connection per iteration (DisableKeepAlives)
-	freshTimes := runParallel(iterations, concurrency, func() time.Duration {
+	freshTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		client := &http.Client{
 			Transport: &http.Transport{
@@ -322,7 +303,7 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 	// Warmup: one request to establish the TLS session
 	doHTTPExec(keepAliveClient, addr, user, pass)
 
-	reuseTimes := runParallel(iterations, concurrency, func() time.Duration {
+	reuseTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		for i := 0; i < cmdsPerIter; i++ {
 			if err := doHTTPExec(keepAliveClient, addr, user, pass); err != nil {
@@ -334,8 +315,8 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 	})
 
 	// Mode 3: batch POST — all commands in one request body
-	batchPayload := generateExecPayload(cmdsPerIter)
-	batchTimes := runParallel(iterations, concurrency, func() time.Duration {
+	batchPayload := stats.GenerateExecPayload(cmdsPerIter)
+	batchTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
 		client := &http.Client{
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
@@ -357,10 +338,10 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 		return time.Since(start)
 	})
 
-	results := []Result{
-		summarize("https", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
-		summarize("https", "keep-alive", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes),
-		summarize("https", "batch-post", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes),
+	results := []stats.Result{
+		stats.Summarize("https", "fresh-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
+		stats.Summarize("https", "keep-alive", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes),
+		stats.Summarize("https", "batch-post", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes),
 	}
 
 	// Mode 4: multi-command GET (ASA slash syntax) — only if >1 cmd
@@ -371,7 +352,7 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 		}
 		multiPath := strings.Join(cmdParts, "/")
 
-		multiTimes := runParallel(iterations, concurrency, func() time.Duration {
+		multiTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 			start := time.Now()
 			client := &http.Client{
 				Transport: &http.Transport{TLSClientConfig: tlsCfg},
@@ -392,17 +373,17 @@ func benchHTTPS(addr, user, pass string, iterations, concurrency, cmdsPerIter in
 			resp.Body.Close()
 			return time.Since(start)
 		})
-		results = append(results, summarize("https", "multi-cmd", cmdsPerIter, iterations, concurrency, profile, rttMs, multiTimes))
+		results = append(results, stats.Summarize("https", "multi-cmd", cmdsPerIter, iterations, concurrency, profile, rttMs, multiTimes))
 	}
 
 	return results
 }
 
-func benchProxy(freshAddr, pooledAddr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []Result {
+func benchProxy(freshAddr, pooledAddr, user, pass string, iterations, concurrency, cmdsPerIter int, profile string, rttMs float64) []stats.Result {
 	log.Printf("Benchmarking Proxy (%d iterations, %d concurrency, %d cmds/iter)", iterations, concurrency, cmdsPerIter)
 
 	tlsCfg := &tls.Config{InsecureSkipVerify: true}
-	payload := generateExecPayload(cmdsPerIter)
+	payload := stats.GenerateExecPayload(cmdsPerIter)
 
 	doProxy := func(addr string) time.Duration {
 		start := time.Now()
@@ -426,12 +407,12 @@ func benchProxy(freshAddr, pooledAddr, user, pass string, iterations, concurrenc
 		return time.Since(start)
 	}
 
-	freshTimes := runParallel(iterations, concurrency, func() time.Duration { return doProxy(freshAddr) })
-	pooledTimes := runParallel(iterations, concurrency, func() time.Duration { return doProxy(pooledAddr) })
+	freshTimes := stats.RunParallel(iterations, concurrency, func() time.Duration { return doProxy(freshAddr) })
+	pooledTimes := stats.RunParallel(iterations, concurrency, func() time.Duration { return doProxy(pooledAddr) })
 
-	return []Result{
-		summarize("proxy", "fresh-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
-		summarize("proxy", "pooled-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, pooledTimes),
+	return []stats.Result{
+		stats.Summarize("proxy", "fresh-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, freshTimes),
+		stats.Summarize("proxy", "pooled-ssh", cmdsPerIter, iterations, concurrency, profile, rttMs, pooledTimes),
 	}
 }
 
@@ -452,104 +433,4 @@ func doHTTPExec(client *http.Client, addr, user, pass string) error {
 	return nil
 }
 
-// generateExecPayload creates a newline-delimited string of N show commands.
-func generateExecPayload(n int) string {
-	var b strings.Builder
-	for i := 0; i < n; i++ {
-		fmt.Fprintf(&b, "show version\n")
-	}
-	return b.String()
-}
 
-func runParallel(iterations, concurrency int, fn func() time.Duration) []time.Duration {
-	results := make([]time.Duration, iterations)
-	sem := make(chan struct{}, concurrency)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for i := 0; i < iterations; i++ {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			d := fn()
-			mu.Lock()
-			results[idx] = d
-			mu.Unlock()
-		}(i)
-	}
-	wg.Wait()
-	return results
-}
-
-func summarize(transport, op string, cmds, iterations, concurrency int, profile string, rttMs float64, times []time.Duration) Result {
-	// Filter out errors (errDuration sentinel)
-	valid := make([]float64, 0, len(times))
-	errors := 0
-	for _, t := range times {
-		if t == errDuration {
-			errors++
-			continue
-		}
-		valid = append(valid, float64(t.Microseconds())/1000)
-	}
-	if errors > 0 {
-		log.Printf("  %s/%s: %d/%d iterations failed", transport, op, errors, iterations)
-	}
-	if len(valid) == 0 {
-		return Result{
-			Transport: transport, Operation: op, Commands: cmds,
-			Iterations: iterations, Errors: errors, Concurrency: concurrency,
-			Latency: profile, RTTms: rttMs,
-		}
-	}
-
-	sort.Float64s(valid)
-	n := len(valid)
-
-	var sum float64
-	for _, v := range valid {
-		sum += v
-	}
-	avg := sum / float64(n)
-
-	var variance float64
-	for _, v := range valid {
-		d := v - avg
-		variance += d * d
-	}
-	stddev := math.Sqrt(variance / float64(n))
-
-	return Result{
-		Transport:   transport,
-		Operation:   op,
-		Commands:    cmds,
-		Iterations:  iterations,
-		Errors:      errors,
-		Concurrency: concurrency,
-		Latency:     profile,
-		RTTms:       rttMs,
-		AvgMs:       avg,
-		MinMs:       valid[0],
-		MaxMs:       valid[n-1],
-		P50Ms:       percentile(valid, 50),
-		P95Ms:       percentile(valid, 95),
-		StddevMs:    stddev,
-	}
-}
-
-// percentile returns the p-th percentile from a sorted slice.
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	rank := (p / 100) * float64(len(sorted)-1)
-	lower := int(rank)
-	upper := lower + 1
-	if upper >= len(sorted) {
-		return sorted[len(sorted)-1]
-	}
-	frac := rank - float64(lower)
-	return sorted[lower] + frac*(sorted[upper]-sorted[lower])
-}
