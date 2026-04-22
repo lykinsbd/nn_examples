@@ -113,8 +113,15 @@ func (s *Server) handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			}
 			req.Reply(true, nil)
 			if execCmd != "" {
-				out := s.dev.Exec(execCmd)
-				io.WriteString(ch, out)
+				// Split newline-delimited payloads (batch exec mode)
+				var out strings.Builder
+				for _, line := range strings.Split(execCmd, "\n") {
+					cmd := strings.TrimSpace(line)
+					if cmd != "" {
+						out.WriteString(s.dev.Exec(cmd))
+					}
+				}
+				io.WriteString(ch, out.String())
 			}
 			ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 			return

@@ -87,15 +87,7 @@ func TestSSHAndHTTPSReturnIdenticalOutput(t *testing.T) {
 func TestSSHAndHTTPSBatchIdenticalOutput(t *testing.T) {
 	sshAddr, httpsAddr := setupServers(t)
 	payload := "show version\nshow version\n"
-	// SSH batch: the exec handler passes the full payload to dev.Exec as one string.
-	// HTTPS POST: splits on newlines and executes each line separately.
-	// Both should produce concatenated output of the individual commands.
-	// Use HTTPS POST as the reference since it splits correctly.
-	httpsOut := httpsPost(t, httpsAddr, payload)
-	if httpsOut == "" {
-		t.Fatal("HTTPS POST returned empty")
-	}
-	// SSH exec with individual commands should match HTTPS POST
+	// SSH batch exec now splits on newlines, same as HTTPS POST
 	cfg := &ssh.ClientConfig{
 		User: "admin", Auth: []ssh.AuthMethod{ssh.Password("admin")},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 5 * time.Second,
@@ -105,22 +97,18 @@ func TestSSHAndHTTPSBatchIdenticalOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	// Execute each command individually and concatenate
-	var sshOut string
-	for _, cmd := range []string{"show version", "show version"} {
-		sess, err := conn.NewSession()
-		if err != nil {
-			t.Fatal(err)
-		}
-		out, err := sess.Output(cmd)
-		sess.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		sshOut += string(out)
+	sess, err := conn.NewSession()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if sshOut != httpsOut {
-		t.Errorf("SSH sequential %q != HTTPS batch %q", sshOut, httpsOut)
+	sshOut, err := sess.Output(payload)
+	sess.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpsOut := httpsPost(t, httpsAddr, payload)
+	if string(sshOut) != httpsOut {
+		t.Errorf("SSH batch %q != HTTPS batch %q", sshOut, httpsOut)
 	}
 }
 

@@ -86,11 +86,8 @@ func TestSSHExecBatchPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The exec handler passes the whole string to dev.Exec, which won't match
-	// multi-line as a single command. Check we get output (the server handles
-	// the full payload as one exec command string).
-	if len(out) == 0 {
-		t.Error("expected non-empty output")
+	if strings.Count(string(out), "TestOS v1") != 3 {
+		t.Errorf("expected 3 outputs, got %q", out)
 	}
 }
 
