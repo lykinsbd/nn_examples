@@ -175,14 +175,27 @@ results/      # Sample benchmark output (JSON)
 ### Running Tests
 
 ```bash
-# All unprivileged tests
+# All tests (no root needed)
 go test -race -count=1 ./...
 
-# Netem tests (requires root / CAP_NET_ADMIN)
+# Netem tests only (requires root / CAP_NET_ADMIN)
 sudo go test -race -v -tags netem_root ./internal/netem/
 ```
 
-See [TESTING.md](TESTING.md) for the full testing strategy and test inventory.
+### Build Tags
+
+| Tag | Requires | What it gates |
+|---|---|---|
+| (none) | Nothing | All unit tests, integration tests, proxy tests |
+| `netem_root` | Root / `CAP_NET_ADMIN` | Tests that call `netem.Setup()` and verify kernel qdisc state |
+
+### Test Coverage
+
+Every package has unit tests. Integration tests in `internal/` verify
+backend equivalence (SSH, HTTPS, and proxy return identical output for the
+same commands), concurrent session handling, and connection pooling modes.
+Statistics functions (`internal/stats`) are tested against known values
+including sample standard deviation (Bessel's correction).
 
 ## License
 
