@@ -1,16 +1,11 @@
 // Package netem provides tc netem-based latency injection on Linux.
 // Requires CAP_NET_ADMIN (or root). Applies per-port delay on the
-// loopback interface using a prio qdisc with u32 filters.
-//
-// Qdiscs are managed via vishvananda/netlink. Filters use exec("tc")
-// because the netlink u32 filter API interacts poorly with prio's
-// priomap — filters added via netlink don't override the priomap
-// classification in all kernel versions.
+// loopback interface using a prio qdisc with u32 filters, configured
+// entirely via netlink (no shell-out to tc).
 package netem
 
 import (
 	"fmt"
-	"os/exec"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -20,76 +15,84 @@ const loopbackIndex = 1
 
 // Setup configures tc netem on the loopback interface with per-port delays.
 func Setup(wanDelay, campusDelay time.Duration, wanPorts, campusPorts []int) error {
-	lo, err := netlink.LinkByIndex(loopbackIndex)
-	if err != nil {
-		return fmt.Errorf("get loopback: %w", err)
-	}
-	_ = lo
-
-	// Clean any existing root qdisc
 	Teardown()
 
-	// Root prio qdisc: 4 bands, all-zero priomap (unmatched → band 0, no delay)
 	prio := netlink.NewPrio(netlink.QdiscAttrs{
 		LinkIndex: loopbackIndex,
 		Handle:    netlink.MakeHandle(1, 0),
 		Parent:    netlink.HANDLE_ROOT,
 	})
 	prio.Bands = 4
-	prio.PriorityMap = [16]uint8{}
+	prio.PriorityMap = [16]uint8{} // all unmatched traffic → band 0 (no delay)
 	if err := netlink.QdiscAdd(prio); err != nil {
 		return fmt.Errorf("add prio qdisc: %w", err)
 	}
 
-	// Band 2: WAN delay
 	if wanDelay > 0 {
-		netem := netlink.NewNetem(
-			netlink.QdiscAttrs{LinkIndex: loopbackIndex, Handle: netlink.MakeHandle(20, 0), Parent: netlink.MakeHandle(1, 2)},
-			netlink.NetemQdiscAttrs{Latency: uint32(wanDelay.Microseconds())},
-		)
-		if err := netlink.QdiscAdd(netem); err != nil {
-			return fmt.Errorf("add wan netem: %w", err)
-		}
-		for _, port := range wanPorts {
-			if err := addFilter(port, "1:2"); err != nil {
-				return err
-			}
+		if err := addNetemBand(2, wanDelay, wanPorts); err != nil {
+			return fmt.Errorf("wan band: %w", err)
 		}
 	}
-
-	// Band 3: campus delay
 	if campusDelay > 0 {
-		netem := netlink.NewNetem(
-			netlink.QdiscAttrs{LinkIndex: loopbackIndex, Handle: netlink.MakeHandle(30, 0), Parent: netlink.MakeHandle(1, 3)},
-			netlink.NetemQdiscAttrs{Latency: uint32(campusDelay.Microseconds())},
-		)
-		if err := netlink.QdiscAdd(netem); err != nil {
-			return fmt.Errorf("add campus netem: %w", err)
-		}
-		for _, port := range campusPorts {
-			if err := addFilter(port, "1:3"); err != nil {
-				return err
-			}
+		if err := addNetemBand(3, campusDelay, campusPorts); err != nil {
+			return fmt.Errorf("campus band: %w", err)
 		}
 	}
-
 	return nil
 }
 
-// addFilter uses tc(8) to add u32 port filters. The netlink u32 API
-// doesn't reliably override prio priomap classification, so we shell
-// out for this one operation.
-func addFilter(port int, flowid string) error {
-	p := fmt.Sprintf("%d", port)
-	for _, args := range [][]string{
-		{"filter", "add", "dev", "lo", "parent", "1:0", "protocol", "ip", "u32", "match", "ip", "dport", p, "0xffff", "flowid", flowid},
-		{"filter", "add", "dev", "lo", "parent", "1:0", "protocol", "ip", "u32", "match", "ip", "sport", p, "0xffff", "flowid", flowid},
-	} {
-		if out, err := exec.Command("tc", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("tc %v: %s (%w)", args[:5], out, err)
+func addNetemBand(band uint16, delay time.Duration, ports []int) error {
+	netem := netlink.NewNetem(
+		netlink.QdiscAttrs{
+			LinkIndex: loopbackIndex,
+			Handle:    netlink.MakeHandle(band*10, 0),
+			Parent:    netlink.MakeHandle(1, band),
+		},
+		netlink.NetemQdiscAttrs{Latency: uint32(delay.Microseconds())},
+	)
+	if err := netlink.QdiscAdd(netem); err != nil {
+		return fmt.Errorf("add netem delay %v: %w", delay, err)
+	}
+	for _, port := range ports {
+		if err := addPortFilter(port, band); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func addPortFilter(port int, band uint16) error {
+	// dport: lower 16 bits at offset 20 (TCP/UDP header after 20-byte IP header)
+	if err := addU32Filter(uint32(port), 0xffff, 20, band); err != nil {
+		return fmt.Errorf("dport %d: %w", port, err)
+	}
+	// sport: upper 16 bits at offset 20
+	if err := addU32Filter(uint32(port)<<16, 0xffff0000, 20, band); err != nil {
+		return fmt.Errorf("sport %d: %w", port, err)
+	}
+	return nil
+}
+
+func addU32Filter(val, mask uint32, off int32, band uint16) error {
+	filter := &netlink.U32{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: loopbackIndex,
+			Parent:    netlink.MakeHandle(1, 0),
+			Priority:  1,
+			Protocol:  0x0800, // ETH_P_IP
+		},
+		ClassId: netlink.MakeHandle(1, band),
+		Sel: &netlink.TcU32Sel{
+			Nkeys: 1,
+			Flags: netlink.TC_U32_TERMINAL,
+			Keys: []netlink.TcU32Key{{
+				Val:  val,
+				Mask: mask,
+				Off:  off,
+			}},
+		},
+	}
+	return netlink.FilterAdd(filter)
 }
 
 // Teardown removes the tc qdisc from loopback.

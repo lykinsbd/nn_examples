@@ -76,10 +76,10 @@ Source: [Verizon Enterprise Monthly IP Latency Statistics](https://www.verizon.c
 ### How latency injection works (default: tc netem)
 
 By default, the benchmark uses Linux `tc netem` to inject delay at the
-kernel level on the loopback interface. Qdiscs are configured via the
-[`vishvananda/netlink`](https://github.com/vishvananda/netlink) library
-(the same netlink library used by Docker and Kubernetes); per-port `u32`
-filters use `tc`(8). A `prio` qdisc routes traffic by port:
+kernel level on the loopback interface. Qdiscs and filters are configured
+entirely via the [`vishvananda/netlink`](https://github.com/vishvananda/netlink)
+library (the same netlink library used by Docker and Kubernetes) — no
+shell-out to `tc`. A `prio` qdisc routes traffic by port:
 
 - **WAN ports** (SSH, HTTPS, proxy frontend): configured one-way delay
   (e.g., 15ms for 30ms RTT)
@@ -168,7 +168,7 @@ internal/
   sshserver/  # crypto/ssh server
   httpserver/ # net/http + TLS server (ASA-style API)
   latency/    # Userspace delay injection (fallback, -userspace flag)
-  netem/      # tc netem setup via netlink + tc(8) (default, requires root)
+  netem/      # tc netem setup via netlink (default, requires root)
   proxy/      # HTTPS→SSH edge proxy (fresh + pooled modes)
   tlsutil/    # Shared self-signed TLS config generator
 transcripts/  # Canned command output files
