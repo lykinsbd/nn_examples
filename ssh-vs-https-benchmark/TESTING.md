@@ -15,30 +15,32 @@ Focuses on gaps that matter for benchmark accuracy and correctness.
 | `internal/latency` | `latency_test.go` | Direction-change delay, consecutive same-direction no-delay, zero-delay passthrough |
 | `internal/integration_test.go` | (package `integration_test`) | SSH exec, SSH bad auth, HTTPS exec, HTTPS bad auth, HTTPS multi-cmd GET, HTTPS config POST |
 
-### What's NOT Tested
+### What's NOT Tested — ~~Gaps~~ Resolved
 
-| Package | Gap | Risk |
+All gaps identified below have been addressed. Tests are in place.
+
+| Package | Former Gap | Resolution |
 |---|---|---|
-| `internal/sshserver` | No unit tests. Only exercised indirectly via integration tests. Interactive shell mode untested. | SSH session handling bugs silently corrupt benchmark results |
-| `internal/httpserver` | No unit tests. No test for empty command path, GET on `/admin/config`, or malformed URLs. | HTTP edge cases return wrong status codes, skewing error counts |
-| `internal/proxy` | Zero tests. Fresh vs pooled SSH modes, pool reset on error, backend failure propagation — all untested. | Proxy benchmark mode could be measuring broken behavior |
-| `internal/netem` | Zero tests. Setup/Teardown never verified. | The benchmark's primary latency mechanism is unvalidated |
-| `internal/tlsutil` | Zero tests. | Cert generation failure would break all HTTPS/proxy tests |
-| `cmd/bench` | `summarize`, `percentile`, `runParallel`, `generateExecPayload` — all untested. | Statistical calculations could be wrong; published numbers would be invalid |
+| `internal/sshserver` | No unit tests | `server_test.go`: multi-session, batch payload, unknown command, port-in-use |
+| `internal/httpserver` | No unit tests | `server_test.go`: empty path, wrong method, empty body, URL decoding, port-in-use |
+| `internal/proxy` | Zero tests | `proxy_test.go`: fresh exec, pooled exec, pool reset, bad auth, backend down, config POST, backend dies mid-request |
+| `internal/netem` | Zero tests | `netem_test.go` (build tag `netem_root`): setup/teardown, idempotent setup, teardown no-op. `netem_unpriv_test.go`: unprivileged error check |
+| `internal/tlsutil` | Zero tests | `tlsutil_test.go`: cert validity |
+| `cmd/bench` / `internal/stats` | `summarize`, `percentile`, `runParallel`, `generateExecPayload` untested | Extracted to `internal/stats`. `stats_test.go`: percentile, interpolation, known values, summarize basic/all-errors/partial-errors, stddev, errDuration sentinel, generate payload, runParallel concurrency/errors |
 
-### Critical Gaps for a Benchmark Tool
+### ~~Critical Gaps~~ Resolved
 
-1. **No validation that netem actually adds delay.** The benchmark assumes `tc netem` works but never checks.
-2. **No test that SSH and HTTPS return identical output** for the same command (same backend guarantee).
-3. **`summarize()` statistics (avg, stddev, percentiles) are untested.** These produce the published numbers.
-4. **Error counting (`errDuration` sentinel) is untested.** A bug here silently inflates or deflates error rates.
-5. **Proxy pool reset logic is untested.** A stale pooled connection could cause cascading failures.
+1. ~~**No validation that netem actually adds delay.**~~ → `netem_test.go` (root-gated) validates setup/teardown via `netlink.QdiscList`.
+2. ~~**No test that SSH and HTTPS return identical output.**~~ → `TestBackendEquivalence`, `TestSSHAndHTTPSReturnIdenticalOutput`, `TestSSHAndHTTPSBatchIdenticalOutput`, `TestProxyReturnsIdenticalOutput`.
+3. ~~**`summarize()` statistics are untested.**~~ → Extracted to `internal/stats`, fully tested including sample stddev (Bessel's correction).
+4. ~~**Error counting (`errDuration` sentinel) is untested.**~~ → `TestErrDurationSentinel`, `TestSummarizeAllErrors`, `TestSummarizePartialErrors`.
+5. ~~**Proxy pool reset logic is untested.**~~ → `TestProxyPooledResetOnError`, `TestProxyBackendDiesMidRequest` (uses TCP proxy to reliably kill connections).
 
 ---
 
 ## 2. Unit Test Plan
 
-### `cmd/bench` (extract to `internal/stats` or test in-package)
+### `internal/stats` (extracted from `cmd/bench`)
 
 | Test | Validates | Root | Priority |
 |---|---|---|---|
@@ -155,15 +157,15 @@ These tests verify the benchmark measures what it claims. They're the most impor
 
 | Test | Package | Validates | Root | Priority |
 |---|---|---|---|---|
-| `TestErrDurationSentinel` | `cmd/bench` (or `internal/stats`) | `summarize()` with known error durations produces correct `Errors` count and excludes errors from stats. | No | P0 |
-| `TestRunParallelCountsErrors` | `cmd/bench` | When `fn` returns `errDuration` for some iterations, the returned slice contains the sentinel values at the correct indices. | No | P1 |
+| `TestErrDurationSentinel` | `internal/stats` | `summarize()` with known error durations produces correct `Errors` count and excludes errors from stats. | No | P0 |
+| `TestRunParallelCountsErrors` | `internal/stats` | When `fn` returns `errDuration` for some iterations, the returned slice contains the sentinel values at the correct indices. | No | P1 |
 
 ### 4d. Statistical Accuracy
 
 | Test | Package | Validates | Root | Priority |
 |---|---|---|---|---|
-| `TestPercentileKnownValues` | `cmd/bench` | `percentile([10,20,30,40,50], 50)` == 30, `percentile([10,20,30,40,50], 95)` == 48. Verified against manual calculation. | No | P0 |
-| `TestStddevKnownValues` | `cmd/bench` | `summarize()` with `[2ms, 4ms, 4ms, 4ms, 5ms, 5ms, 7ms, 9ms]` produces stddev ≈ 2.0. | No | P0 |
+| `TestPercentileKnownValues` | `internal/stats` | `percentile([10,20,30,40,50], 50)` == 30, `percentile([10,20,30,40,50], 95)` == 48. Verified against manual calculation. | No | P0 |
+| `TestStddevKnownValues` | `internal/stats` | `summarize()` with `[2ms, 4ms, 4ms, 4ms, 5ms, 5ms, 7ms, 9ms]` produces sample stddev ≈ 2.14 (Bessel's correction). | No | P0 |
 
 ---
 
@@ -190,19 +192,18 @@ These tests verify the benchmark measures what it claims. They're the most impor
 
 ```
 internal/
-  device/device_test.go          # go test ./internal/device/
-  latency/latency_test.go        # go test ./internal/latency/
-  netem/netem_test.go             # //go:build linux → go test -tags netem ./internal/netem/
-  netem/netem_root_test.go        # //go:build netem_root → sudo go test -tags netem_root ./internal/netem/
-  sshserver/server_test.go        # go test ./internal/sshserver/
-  httpserver/server_test.go       # go test ./internal/httpserver/
-  proxy/proxy_test.go             # go test ./internal/proxy/
-  tlsutil/tlsutil_test.go         # go test ./internal/tlsutil/
-  integration_test.go             # existing
-  integration_proxy_test.go       # new proxy integration tests
-  benchmark_validation_test.go    # //go:build benchmark_validation
-cmd/bench/
-  stats_test.go                   # percentile, summarize, runParallel (or extract to internal/stats)
+  device/device_test.go           # go test ./internal/device/
+  device/device_extra_test.go     # missing dir, empty dir, no transcripts
+  latency/latency_test.go         # go test ./internal/latency/
+  netem/netem_test.go              # //go:build netem_root → sudo go test -tags netem_root ./internal/netem/
+  netem/netem_unpriv_test.go       # unprivileged error check (no build tag)
+  sshserver/server_test.go         # go test ./internal/sshserver/
+  httpserver/server_test.go        # go test ./internal/httpserver/
+  proxy/proxy_test.go              # go test ./internal/proxy/
+  tlsutil/tlsutil_test.go          # go test ./internal/tlsutil/
+  stats/stats_test.go              # go test ./internal/stats/
+  integration_test.go              # existing
+  integration_equiv_test.go        # backend equivalence, concurrent sessions, proxy integration
 ```
 
 ### Tag Scheme
@@ -251,7 +252,7 @@ go test -race -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 
 # Just the stats/percentile tests (fast, no servers)
-go test -race -v -run 'Test(Percentile|Summarize|GenerateExec)' ./cmd/bench/
+go test -race -v -run 'Test(Percentile|Summarize|GenerateExec)' ./internal/stats/
 
 # Run only P0 tests (by convention, P0 tests don't have "P2" or "Nice" in name)
 go test -race -v ./...
@@ -265,11 +266,11 @@ go test -race -v ./...
 
 | # | Test | Package |
 |---|---|---|
-| 1 | `TestPercentile` | `cmd/bench` |
-| 2 | `TestPercentileInterpolation` | `cmd/bench` |
-| 3 | `TestSummarizeBasic` | `cmd/bench` |
-| 4 | `TestSummarizeAllErrors` | `cmd/bench` |
-| 5 | `TestSummarizePartialErrors` | `cmd/bench` |
+| 1 | `TestPercentile` | `internal/stats` |
+| 2 | `TestPercentileInterpolation` | `internal/stats` |
+| 3 | `TestSummarizeBasic` | `internal/stats` |
+| 4 | `TestSummarizeAllErrors` | `internal/stats` |
+| 5 | `TestSummarizePartialErrors` | `internal/stats` |
 | 6 | `TestSSHExecMultiSession` | `internal/sshserver` |
 | 7 | `TestSSHExecBatchPayload` | `internal/sshserver` |
 | 8 | `TestProxyFreshExec` | `internal/proxy` |
@@ -283,17 +284,17 @@ go test -race -v ./...
 | 16 | `TestSSHAndHTTPSBatchIdenticalOutput` | `integration_test` |
 | 17 | `TestProxyReturnsIdenticalOutput` | `integration_test` |
 | 18 | `TestBackendEquivalence` | `integration_test` |
-| 19 | `TestErrDurationSentinel` | `cmd/bench` |
-| 20 | `TestPercentileKnownValues` | `cmd/bench` |
-| 21 | `TestStddevKnownValues` | `cmd/bench` |
+| 19 | `TestErrDurationSentinel` | `internal/stats` |
+| 20 | `TestPercentileKnownValues` | `internal/stats` |
+| 21 | `TestStddevKnownValues` | `internal/stats` |
 | 22 | `TestNetemSetupUnprivileged` | `internal/netem` |
 
 ### P1 — Should Have (robustness)
 
 | # | Test | Package |
 |---|---|---|
-| 1 | `TestGenerateExecPayload` | `cmd/bench` |
-| 2 | `TestRunParallelConcurrency` | `cmd/bench` |
+| 1 | `TestGenerateExecPayload` | `internal/stats` |
+| 2 | `TestRunParallelConcurrency` | `internal/stats` |
 | 3 | `TestSSHExecUnknownCommand` | `internal/sshserver` |
 | 4 | `TestHTTPSExecEmptyPath` | `internal/httpserver` |
 | 5 | `TestHTTPSConfigGetMethod` | `internal/httpserver` |
@@ -314,7 +315,7 @@ go test -race -v ./...
 | 20 | `TestConcurrentSSHSessions` | `integration_test` |
 | 21 | `TestConcurrentHTTPSRequests` | `integration_test` |
 | 22 | `TestProxyPooledConcurrent` | `integration_test` |
-| 23 | `TestRunParallelCountsErrors` | `cmd/bench` |
+| 23 | `TestRunParallelCountsErrors` | `internal/stats` |
 | 24 | `TestSSHServerPortInUse` | `internal/sshserver` |
 | 25 | `TestHTTPSServerPortInUse` | `internal/httpserver` |
 | 26 | `TestDeviceNoTranscripts` | `internal/device` |
@@ -340,12 +341,9 @@ go test -race -v ./...
 
 ### Extracting `summarize`/`percentile` for testability
 
-`cmd/bench/main.go` puts `summarize()`, `percentile()`, `runParallel()`, and `generateExecPayload()` in `package main`. Two options:
+`cmd/bench/main.go` originally had `summarize()`, `percentile()`, `runParallel()`, and `generateExecPayload()` in `package main`. These were extracted to `internal/stats` as exported functions (`Summarize`, `Percentile`, `RunParallel`, `GenerateExecPayload`). `cmd/bench/main.go` now imports from `internal/stats`.
 
-1. **Add `cmd/bench/stats_test.go`** in `package main` — simplest, tests internal functions directly.
-2. **Extract to `internal/stats`** — cleaner, but requires refactoring imports.
-
-Option 1 is recommended to avoid unnecessary refactoring. The functions are small and unlikely to be reused elsewhere.
+During extraction, the stddev formula was corrected from population stddev (÷N) to sample stddev (÷(N-1), Bessel's correction), with a guard for n==1 returning 0.
 
 ### Proxy test setup
 

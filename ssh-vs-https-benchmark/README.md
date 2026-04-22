@@ -143,12 +143,6 @@ handshake has higher CPU overhead than the SSH handshake. The HTTPS
 advantage only appears when network latency dominates, which is the
 scenario the blog series focuses on.
 
-## Running Tests
-
-```bash
-go test -race ./...
-```
-
 ## Sample Results
 
 The `results/` directory contains sample JSON output from benchmark runs.
@@ -170,10 +164,25 @@ internal/
   latency/    # Userspace delay injection (fallback, -userspace flag)
   netem/      # tc netem setup via netlink (default, requires root)
   proxy/      # HTTPS→SSH edge proxy (fresh + pooled modes)
+  stats/      # Benchmark statistics (percentile, summarize, runParallel)
   tlsutil/    # Shared self-signed TLS config generator
 transcripts/  # Canned command output files
 results/      # Sample benchmark output (JSON)
 ```
+
+## Development
+
+### Running Tests
+
+```bash
+# All unprivileged tests
+go test -race -count=1 ./...
+
+# Netem tests (requires root / CAP_NET_ADMIN)
+sudo go test -race -v -tags netem_root ./internal/netem/
+```
+
+See [TESTING.md](TESTING.md) for the full testing strategy and test inventory.
 
 ## License
 

@@ -8,12 +8,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 760.4824,
-    "min_ms": 657.267,
-    "max_ms": 859.23,
-    "p50_ms": 760.1275,
-    "p95_ms": 830.0726000000001,
-    "stddev_ms": 48.26163519753552
+    "avg_ms": 753.26605,
+    "min_ms": 642.974,
+    "max_ms": 820.639,
+    "p50_ms": 750.624,
+    "p95_ms": 819.5427,
+    "stddev_ms": 48.533347396647635
   },
   {
     "transport": "ssh",
@@ -24,12 +24,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 489.73834999999997,
-    "min_ms": 404.091,
-    "max_ms": 575.054,
-    "p50_ms": 499.272,
-    "p95_ms": 569.35685,
-    "stddev_ms": 48.57054854670163
+    "avg_ms": 478.15944999999994,
+    "min_ms": 391.489,
+    "max_ms": 568.395,
+    "p50_ms": 497.5045,
+    "p95_ms": 536.79705,
+    "stddev_ms": 53.481985431864906
   },
   {
     "transport": "ssh",
@@ -40,12 +40,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 380.00515,
-    "min_ms": 356.93,
-    "max_ms": 431.318,
-    "p50_ms": 392.346,
-    "p95_ms": 398.0946,
-    "stddev_ms": 21.111316198368588
+    "avg_ms": 377.06415,
+    "min_ms": 357.028,
+    "max_ms": 428.78,
+    "p50_ms": 375.591,
+    "p95_ms": 394.90585,
+    "stddev_ms": 21.1840004752221
   },
   {
     "transport": "https",
@@ -56,12 +56,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 722.4167,
-    "min_ms": 718.03,
-    "max_ms": 742.759,
-    "p50_ms": 720.8095000000001,
-    "p95_ms": 728.0036,
-    "stddev_ms": 5.358700179147921
+    "avg_ms": 722.1158,
+    "min_ms": 717.591,
+    "max_ms": 743.206,
+    "p50_ms": 721.2905000000001,
+    "p95_ms": 726.3796000000001,
+    "stddev_ms": 5.3801064614784515
   },
   {
     "transport": "https",
@@ -72,12 +72,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 180.87725,
-    "min_ms": 178.296,
-    "max_ms": 214.788,
-    "p50_ms": 179.0155,
-    "p95_ms": 183.67835000000002,
-    "stddev_ms": 7.819544097164491
+    "avg_ms": 185.9821,
+    "min_ms": 178.115,
+    "max_ms": 249.11,
+    "p50_ms": 178.847,
+    "p95_ms": 216.15165000000002,
+    "stddev_ms": 18.4174084178958
   },
   {
     "transport": "https",
@@ -88,12 +88,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 179.64905000000005,
-    "min_ms": 178.621,
-    "max_ms": 180.576,
-    "p50_ms": 179.55,
-    "p95_ms": 180.5722,
-    "stddev_ms": 0.5390473518161463
+    "avg_ms": 179.68175,
+    "min_ms": 178.537,
+    "max_ms": 182.337,
+    "p50_ms": 179.47199999999998,
+    "p95_ms": 181.51525,
+    "stddev_ms": 0.9706970298111608
   },
   {
     "transport": "https",
@@ -104,12 +104,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 178.64355,
-    "min_ms": 144.022,
-    "max_ms": 194.088,
-    "p50_ms": 179.64499999999998,
-    "p95_ms": 184.9395,
-    "stddev_ms": 8.622904554006151
+    "avg_ms": 178.17530000000002,
+    "min_ms": 144.217,
+    "max_ms": 188.751,
+    "p50_ms": 179.565,
+    "p95_ms": 180.97809999999998,
+    "stddev_ms": 8.281422221486249
   },
   {
     "transport": "proxy",
@@ -120,12 +120,12 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 177.51314999999997,
-    "min_ms": 169.655,
-    "max_ms": 204.386,
-    "p50_ms": 174.6135,
-    "p95_ms": 202.48505,
-    "stddev_ms": 9.208942524931944
+    "avg_ms": 174.20725,
+    "min_ms": 168.876,
+    "max_ms": 190.208,
+    "p50_ms": 172.856,
+    "p95_ms": 185.95865,
+    "stddev_ms": 5.256553542458866
   },
   {
     "transport": "proxy",
@@ -136,11 +136,11 @@
     "concurrency": 1,
     "latency_profile": "continental",
     "simulated_rtt_ms": 70,
-    "avg_ms": 162.00795,
-    "min_ms": 157.481,
-    "max_ms": 175.892,
-    "p50_ms": 160.76549999999997,
-    "p95_ms": 166.79385,
-    "stddev_ms": 3.910382135738142
+    "avg_ms": 162.22870000000003,
+    "min_ms": 158.063,
+    "max_ms": 172.062,
+    "p50_ms": 162.059,
+    "p95_ms": 168.7617,
+    "stddev_ms": 3.311551172550572
   }
 ]
