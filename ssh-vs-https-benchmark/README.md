@@ -48,9 +48,11 @@ Output is JSON to stdout. Logs go to stderr.
 
 | Mode | Transport | Description |
 |---|---|---|
-| `fresh-conn` | SSH | New TCP + SSH handshake + auth per iteration |
-| `reuse-conn` | SSH | Shared connection, new channel per command (ControlMaster-style) |
+| `fresh-conn` | SSH | New TCP + SSH handshake + auth per iteration (exec mode) |
+| `reuse-conn` | SSH | Shared connection, new channel per command (exec mode, ControlMaster-style) |
 | `batch-exec` | SSH | All commands in one exec payload |
+| `pty-fresh` | SSH | New connection + PTY/shell per iteration (Netmiko-style prompt detection) |
+| `pty-reuse` | SSH | Shared connection, new PTY/shell per iteration |
 | `fresh-conn` | HTTPS | New TCP + TLS handshake per iteration |
 | `keep-alive` | HTTPS | Shared TLS connection across all iterations |
 | `batch-post` | HTTPS | All commands in one POST body |

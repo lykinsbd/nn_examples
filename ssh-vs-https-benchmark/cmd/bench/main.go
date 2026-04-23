@@ -268,6 +268,97 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 		results = append(results, stats.Summarize("ssh", "reuse-conn", cmdsPerIter, iterations, concurrency, profile, rttMs, reuseTimes))
 	}
 	results = append(results, stats.Summarize("ssh", "batch-exec", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes))
+
+	// Mode 4: PTY/shell — interactive session with prompt detection (Netmiko-style)
+	// Fresh connection per iteration
+	prompt := "bench-rtr#"
+	ptyFreshTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
+		start := time.Now()
+		conn, err := ssh.Dial("tcp", addr, cfg)
+		if err != nil {
+			log.Printf("ssh pty dial: %v", err)
+			return errDuration
+		}
+		defer conn.Close()
+		sess, err := conn.NewSession()
+		if err != nil {
+			log.Printf("ssh pty session: %v", err)
+			return errDuration
+		}
+		defer sess.Close()
+		if err := sess.RequestPty("vt100", 1000, 511, ssh.TerminalModes{}); err != nil {
+			log.Printf("ssh pty-req: %v", err)
+			return errDuration
+		}
+		w, err := sess.StdinPipe()
+		if err != nil {
+			return errDuration
+		}
+		r, err := sess.StdoutPipe()
+		if err != nil {
+			return errDuration
+		}
+		if err := sess.Shell(); err != nil {
+			log.Printf("ssh shell: %v", err)
+			return errDuration
+		}
+		if err := readUntilPrompt(r, prompt); err != nil {
+			log.Printf("ssh pty initial prompt: %v", err)
+			return errDuration
+		}
+		for i := 0; i < cmdsPerIter; i++ {
+			fmt.Fprintf(w, "show version\n")
+			if err := readUntilPrompt(r, prompt); err != nil {
+				log.Printf("ssh pty read: %v", err)
+				return errDuration
+			}
+		}
+		fmt.Fprintf(w, "exit\n")
+		return time.Since(start)
+	})
+	results = append(results, stats.Summarize("ssh", "pty-fresh", cmdsPerIter, iterations, concurrency, profile, rttMs, ptyFreshTimes))
+
+	// Mode 5: PTY/shell — reuse connection, new shell per iteration
+	ptyConn, err := ssh.Dial("tcp", addr, cfg)
+	if err == nil {
+		ptyReuseTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
+			start := time.Now()
+			sess, err := ptyConn.NewSession()
+			if err != nil {
+				log.Printf("ssh pty reuse session: %v", err)
+				return errDuration
+			}
+			defer sess.Close()
+			if err := sess.RequestPty("vt100", 1000, 511, ssh.TerminalModes{}); err != nil {
+				return errDuration
+			}
+			w, err := sess.StdinPipe()
+			if err != nil {
+				return errDuration
+			}
+			r, err := sess.StdoutPipe()
+			if err != nil {
+				return errDuration
+			}
+			if err := sess.Shell(); err != nil {
+				return errDuration
+			}
+			if err := readUntilPrompt(r, prompt); err != nil {
+				return errDuration
+			}
+			for i := 0; i < cmdsPerIter; i++ {
+				fmt.Fprintf(w, "show version\n")
+				if err := readUntilPrompt(r, prompt); err != nil {
+					return errDuration
+				}
+			}
+			fmt.Fprintf(w, "exit\n")
+			return time.Since(start)
+		})
+		ptyConn.Close()
+		results = append(results, stats.Summarize("ssh", "pty-reuse", cmdsPerIter, iterations, concurrency, profile, rttMs, ptyReuseTimes))
+	}
+
 	return results
 }
 
@@ -433,4 +524,22 @@ func doHTTPExec(client *http.Client, addr, user, pass string) error {
 	return nil
 }
 
+// readUntilPrompt reads from r until the prompt string appears, mimicking
+// what Netmiko/screen-scraping tools do after sending each command.
+func readUntilPrompt(r io.Reader, prompt string) error {
+	buf := make([]byte, 4096)
+	var acc string
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			acc += string(buf[:n])
+			if strings.Contains(acc, prompt) {
+				return nil
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
 

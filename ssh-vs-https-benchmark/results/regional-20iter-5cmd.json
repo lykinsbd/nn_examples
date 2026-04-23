@@ -8,12 +8,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 336.01425000000006,
-    "min_ms": 296.869,
-    "max_ms": 362.183,
-    "p50_ms": 333.96500000000003,
-    "p95_ms": 361.5617,
-    "stddev_ms": 17.05459091726515
+    "avg_ms": 334.10055,
+    "min_ms": 281.547,
+    "max_ms": 375.007,
+    "p50_ms": 343.0475,
+    "p95_ms": 360.776,
+    "stddev_ms": 22.47366773634611
   },
   {
     "transport": "ssh",
@@ -24,12 +24,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 198.90945,
-    "min_ms": 163.033,
-    "max_ms": 234.517,
-    "p50_ms": 202.439,
-    "p95_ms": 219.16025000000002,
-    "stddev_ms": 19.69291173433517
+    "avg_ms": 207.83855000000003,
+    "min_ms": 159.091,
+    "max_ms": 234.77,
+    "p50_ms": 211.601,
+    "p95_ms": 234.6123,
+    "stddev_ms": 20.717585534173367
   },
   {
     "transport": "ssh",
@@ -40,12 +40,44 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 171.444,
-    "min_ms": 156.882,
-    "max_ms": 192.111,
-    "p50_ms": 173.041,
-    "p95_ms": 189.26575000000003,
-    "stddev_ms": 10.660859405468113
+    "avg_ms": 167.07845000000003,
+    "min_ms": 157.369,
+    "max_ms": 189.528,
+    "p50_ms": 168.926,
+    "p95_ms": 176.72295000000003,
+    "stddev_ms": 9.409162010201042
+  },
+  {
+    "transport": "ssh",
+    "operation": "pty-fresh",
+    "commands": 5,
+    "iterations": 20,
+    "errors": 0,
+    "concurrency": 1,
+    "latency_profile": "regional",
+    "simulated_rtt_ms": 30,
+    "avg_ms": 259.5430499999999,
+    "min_ms": 250.676,
+    "max_ms": 275.442,
+    "p50_ms": 254.543,
+    "p95_ms": 269.93105,
+    "stddev_ms": 8.50967901228391
+  },
+  {
+    "transport": "ssh",
+    "operation": "pty-reuse",
+    "commands": 5,
+    "iterations": 20,
+    "errors": 0,
+    "concurrency": 1,
+    "latency_profile": "regional",
+    "simulated_rtt_ms": 30,
+    "avg_ms": 137.07270000000003,
+    "min_ms": 124.629,
+    "max_ms": 142.397,
+    "p50_ms": 140.68099999999998,
+    "p95_ms": 142.38085,
+    "stddev_ms": 7.148112375784398
   },
   {
     "transport": "https",
@@ -56,12 +88,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 320.74884999999995,
-    "min_ms": 317.77,
-    "max_ms": 327.388,
-    "p50_ms": 319.96000000000004,
-    "p95_ms": 326.47125,
-    "stddev_ms": 2.7812399596507116
+    "avg_ms": 320.89765,
+    "min_ms": 319.258,
+    "max_ms": 323.086,
+    "p50_ms": 320.502,
+    "p95_ms": 323.08315000000005,
+    "stddev_ms": 1.2984083485073952
   },
   {
     "transport": "https",
@@ -72,12 +104,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 79.58224999999999,
-    "min_ms": 78.162,
-    "max_ms": 94.514,
-    "p50_ms": 78.67949999999999,
-    "p95_ms": 80.55185,
-    "stddev_ms": 3.5374512364130184
+    "avg_ms": 80.10355000000001,
+    "min_ms": 78.503,
+    "max_ms": 96.171,
+    "p50_ms": 79.076,
+    "p95_ms": 82.49670000000002,
+    "stddev_ms": 3.8670971769941085
   },
   {
     "transport": "https",
@@ -88,12 +120,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 79.29905000000001,
-    "min_ms": 64.976,
-    "max_ms": 86.913,
-    "p50_ms": 79.798,
-    "p95_ms": 80.6639,
-    "stddev_ms": 3.7760295141994407
+    "avg_ms": 79.11305,
+    "min_ms": 64.32,
+    "max_ms": 81.215,
+    "p50_ms": 79.97999999999999,
+    "p95_ms": 80.31535,
+    "stddev_ms": 3.5147287456165333
   },
   {
     "transport": "https",
@@ -104,12 +136,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 80.8805,
-    "min_ms": 63.938,
-    "max_ms": 123.001,
-    "p50_ms": 79.5635,
-    "p95_ms": 91.29380000000002,
-    "stddev_ms": 11.281650595453431
+    "avg_ms": 80.26205,
+    "min_ms": 78.672,
+    "max_ms": 85.881,
+    "p50_ms": 79.6905,
+    "p95_ms": 83.3122,
+    "stddev_ms": 1.6975468825399362
   },
   {
     "transport": "proxy",
@@ -120,12 +152,12 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 94.80145,
-    "min_ms": 91.536,
-    "max_ms": 104.527,
-    "p50_ms": 93.905,
-    "p95_ms": 96.72370000000001,
-    "stddev_ms": 2.6510132814493885
+    "avg_ms": 95.11609999999999,
+    "min_ms": 90.394,
+    "max_ms": 101.458,
+    "p50_ms": 94.9425,
+    "p95_ms": 99.748,
+    "stddev_ms": 3.008943281898848
   },
   {
     "transport": "proxy",
@@ -136,11 +168,11 @@
     "concurrency": 1,
     "latency_profile": "regional",
     "simulated_rtt_ms": 30,
-    "avg_ms": 81.51270000000002,
-    "min_ms": 76.768,
-    "max_ms": 92.237,
-    "p50_ms": 81.5315,
-    "p95_ms": 84.6769,
-    "stddev_ms": 3.2136184082252526
+    "avg_ms": 85.8295,
+    "min_ms": 79.026,
+    "max_ms": 104.603,
+    "p50_ms": 83.501,
+    "p95_ms": 102.3762,
+    "stddev_ms": 7.246850259541072
   }
 ]
