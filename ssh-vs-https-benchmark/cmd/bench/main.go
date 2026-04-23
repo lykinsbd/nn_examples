@@ -270,7 +270,8 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 	results = append(results, stats.Summarize("ssh", "batch-exec", cmdsPerIter, iterations, concurrency, profile, rttMs, batchTimes))
 
 	// Mode 4: PTY/shell — interactive session with prompt detection (Netmiko-style)
-	// Fresh connection per iteration
+	// Includes session prep (terminal length 0, terminal width 511) and
+	// per-command echo verification, matching real-world tool behavior.
 	prompt := "bench-rtr#"
 	ptyFreshTimes := stats.RunParallel(iterations, concurrency, func() time.Duration {
 		start := time.Now()
@@ -282,38 +283,13 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 		defer conn.Close()
 		sess, err := conn.NewSession()
 		if err != nil {
-			log.Printf("ssh pty session: %v", err)
 			return errDuration
 		}
 		defer sess.Close()
-		if err := sess.RequestPty("vt100", 1000, 511, ssh.TerminalModes{}); err != nil {
-			log.Printf("ssh pty-req: %v", err)
+		if err := ptyExecCmds(sess, prompt, cmdsPerIter); err != nil {
+			log.Printf("ssh pty-fresh: %v", err)
 			return errDuration
 		}
-		w, err := sess.StdinPipe()
-		if err != nil {
-			return errDuration
-		}
-		r, err := sess.StdoutPipe()
-		if err != nil {
-			return errDuration
-		}
-		if err := sess.Shell(); err != nil {
-			log.Printf("ssh shell: %v", err)
-			return errDuration
-		}
-		if err := readUntilPrompt(r, prompt); err != nil {
-			log.Printf("ssh pty initial prompt: %v", err)
-			return errDuration
-		}
-		for i := 0; i < cmdsPerIter; i++ {
-			fmt.Fprintf(w, "show version\n")
-			if err := readUntilPrompt(r, prompt); err != nil {
-				log.Printf("ssh pty read: %v", err)
-				return errDuration
-			}
-		}
-		fmt.Fprintf(w, "exit\n")
 		return time.Since(start)
 	})
 	results = append(results, stats.Summarize("ssh", "pty-fresh", cmdsPerIter, iterations, concurrency, profile, rttMs, ptyFreshTimes))
@@ -325,34 +301,13 @@ func benchSSH(addr, user, pass string, iterations, concurrency, cmdsPerIter int,
 			start := time.Now()
 			sess, err := ptyConn.NewSession()
 			if err != nil {
-				log.Printf("ssh pty reuse session: %v", err)
 				return errDuration
 			}
 			defer sess.Close()
-			if err := sess.RequestPty("vt100", 1000, 511, ssh.TerminalModes{}); err != nil {
+			if err := ptyExecCmds(sess, prompt, cmdsPerIter); err != nil {
+				log.Printf("ssh pty-reuse: %v", err)
 				return errDuration
 			}
-			w, err := sess.StdinPipe()
-			if err != nil {
-				return errDuration
-			}
-			r, err := sess.StdoutPipe()
-			if err != nil {
-				return errDuration
-			}
-			if err := sess.Shell(); err != nil {
-				return errDuration
-			}
-			if err := readUntilPrompt(r, prompt); err != nil {
-				return errDuration
-			}
-			for i := 0; i < cmdsPerIter; i++ {
-				fmt.Fprintf(w, "show version\n")
-				if err := readUntilPrompt(r, prompt); err != nil {
-					return errDuration
-				}
-			}
-			fmt.Fprintf(w, "exit\n")
 			return time.Since(start)
 		})
 		ptyConn.Close()
@@ -524,22 +479,83 @@ func doHTTPExec(client *http.Client, addr, user, pass string) error {
 	return nil
 }
 
-// readUntilPrompt reads from r until the prompt string appears, mimicking
-// what Netmiko/screen-scraping tools do after sending each command.
-func readUntilPrompt(r io.Reader, prompt string) error {
-	buf := make([]byte, 4096)
-	var acc string
+// ptyReader wraps an io.Reader with a buffer so readUntil doesn't lose
+// data that arrives after the match in the same Read() call.
+type ptyReader struct {
+	r   io.Reader
+	buf string
+}
+
+func (p *ptyReader) readUntil(target string) error {
+	b := make([]byte, 4096)
 	for {
-		n, err := r.Read(buf)
+		if idx := strings.Index(p.buf, target); idx >= 0 {
+			p.buf = p.buf[idx+len(target):]
+			return nil
+		}
+		n, err := p.r.Read(b)
 		if n > 0 {
-			acc += string(buf[:n])
-			if strings.Contains(acc, prompt) {
-				return nil
-			}
+			p.buf += string(b[:n])
 		}
 		if err != nil {
 			return err
 		}
 	}
+}
+
+// ptyExecCmds runs commands over a PTY shell session with realistic
+// session preparation and per-command echo verification, matching the
+// protocol-level behavior of Netmiko, Ansible network_cli, and Scrapli.
+func ptyExecCmds(sess *ssh.Session, prompt string, cmds int) error {
+	w, err := sess.StdinPipe()
+	if err != nil {
+		return err
+	}
+	r, err := sess.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := sess.RequestPty("vt100", 1000, 511, ssh.TerminalModes{}); err != nil {
+		return err
+	}
+	if err := sess.Shell(); err != nil {
+		return err
+	}
+
+	pr := &ptyReader{r: r}
+
+	// Wait for initial prompt
+	if err := pr.readUntil(prompt); err != nil {
+		return err
+	}
+
+	// Session preparation: disable paging and set terminal width.
+	// Every major tool (Netmiko, Ansible, Scrapli) does this.
+	for _, prepCmd := range []string{"terminal length 0", "terminal width 511"} {
+		fmt.Fprintf(w, "%s\n", prepCmd)
+		if err := pr.readUntil(prepCmd); err != nil {
+			return err
+		}
+		if err := pr.readUntil(prompt); err != nil {
+			return err
+		}
+	}
+
+	// Execute commands with echo verification per command
+	for i := 0; i < cmds; i++ {
+		cmd := "show version"
+		fmt.Fprintf(w, "%s\n", cmd)
+		// Phase 1: read until echoed command appears
+		if err := pr.readUntil(cmd); err != nil {
+			return err
+		}
+		// Phase 2: read until prompt (command output complete)
+		if err := pr.readUntil(prompt); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(w, "exit\n")
+	return nil
 }
 
